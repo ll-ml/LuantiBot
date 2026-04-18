@@ -1,0 +1,54 @@
+pub const PROTOCOL_ID: u32 = 0x4f457403;
+pub const PEER_ID_INEXISTENT: u16 = 0;
+pub const CHANNEL_DEFAULT: u8 = 0;
+
+pub const PACKET_TYPE_CONTROL: u8 = 0;
+pub const PACKET_TYPE_ORIGINAL: u8 = 1;
+pub const PACKET_TYPE_SPLIT: u8 = 2;
+pub const PACKET_TYPE_RELIABLE: u8 = 3;
+
+pub const CONTROLTYPE_ACK: u8 = 0;
+pub const CONTROLTYPE_SET_PEER_ID: u8 = 1;
+pub const CONTROLTYPE_PING: u8 = 2;
+pub const CONTROLTYPE_DISCO: u8 = 3;
+
+pub const SEQNUM_INITIAL: u16 = 65500;
+
+pub const TOSERVER_INIT: u16 = 0x02;
+pub const TOSERVER_INIT2: u16 = 0x11;
+pub const TOSERVER_FIRST_SRP: u16 = 0x50;
+pub const TOSERVER_SRP_BYTES_A: u16 = 0x51;
+pub const TOSERVER_SRP_BYTES_M: u16 = 0x52;
+pub const TOSERVER_CLIENT_READY: u16 = 0x43;
+pub const TOSERVER_PLAYERPOS: u16 = 0x23;
+pub const TOSERVER_INTERACT: u16 = 0x39;
+pub const TOSERVER_GOTBLOCKS: u16 = 0x24;
+pub const TOSERVER_PLAYERITEM: u16 = 0x37;
+pub const TOSERVER_HAVE_MEDIA: u16 = 0x41;
+pub const TOSERVER_CHAT_MESSAGE: u16 = 0x32;
+
+pub const TOCLIENT_HELLO: u16 = 0x02;
+pub const TOCLIENT_AUTH_ACCEPT: u16 = 0x03;
+pub const TOCLIENT_ACCESS_DENIED: u16 = 0x0A;
+pub const TOCLIENT_MOVE_PLAYER: u16 = 0x34;
+pub const TOCLIENT_SRP_BYTES_S_B: u16 = 0x60;
+pub const TOCLIENT_NODEDEF: u16 = 0x3a;
+pub const TOCLIENT_ITEMDEF: u16 = 0x3d;
+pub const TOCLIENT_ANNOUNCE_MEDIA: u16 = 0x3c;
+pub const TOCLIENT_CHAT_MESSAGE: u16 = 0x2f;
+pub const TOCLIENT_ACTIVE_OBJECT_REMOVE_ADD: u16 = 0x31;
+pub const TOCLIENT_ACTIVE_OBJECT_MESSAGES: u16 = 0x32;
+pub const TOCLIENT_BLOCKDATA: u16 = 0x20;
+
+pub const SER_FMT_VER_HIGHEST_READ: u8 = 29;
+pub const CLIENT_PROTOCOL_VERSION_MIN: u16 = 37;
+pub const LATEST_PROTOCOL_VERSION: u16 = 51;
+
+pub const VERSION_MAJOR: u8 = 5;
+pub const VERSION_MINOR: u8 = 16;
+pub const VERSION_PATCH: u8 = 0;
+
+pub const KEY_FORWARD: u32 = 1 << 0;
+
+pub const AUTH_MECHANISM_FIRST_SRP: u32 = 0x04;
+pub const AUTH_MECHANISM_SRP: u32 = 0x02;

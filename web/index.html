@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Luanti Bot Controller</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Human Control Panel</p>
+        <h1>Luanti Bot Controller</h1>
+        <p class="subtitle">Send direct REST actions and inspect responses.</p>
+      </div>
+      <div class="status-pill" id="connectionStatus">Disconnected</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <div class="card">
+          <h2>Connection</h2>
+          <div class="field">
+            <label for="baseUrl">Base URL</label>
+            <input id="baseUrl" type="text" value="/api" />
+          </div>
+          <div class="field">
+            <label for="authToken">API Token (optional)</label>
+            <input id="authToken" type="password" placeholder="Bearer token" />
+          </div>
+          <div class="button-row">
+            <button type="button" class="ghost" id="pingBtn">Ping /health</button>
+            <button type="button" class="ghost" id="clearBtn">Clear Output</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Observe</h2>
+          <form class="action-form" data-endpoint="/observe_server" data-method="GET">
+            <div class="inline">
+              <div class="field">
+                <label for="observeServerRadius">Radius</label>
+                <input id="observeServerRadius" name="radius" type="number" min="1" max="8" placeholder="4" />
+              </div>
+              <button type="submit">GET /observe_server</button>
+            </div>
+          </form>
+          <form class="action-form" data-endpoint="/observe" data-method="GET">
+            <div class="inline">
+              <div class="field">
+                <label for="observeRadius">Radius</label>
+                <input id="observeRadius" name="radius" type="number" min="1" max="8" placeholder="4" />
+              </div>
+              <button type="submit">GET /observe</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Movement</h2>
+          <form class="action-form" data-endpoint="/move" data-method="POST">
+            <div class="field">
+              <label>Direction</label>
+              <div class="inline">
+                <input name="direction" type="text" placeholder="forward" />
+                <input name="steps" type="number" min="1" max="8" placeholder="steps" />
+                <button type="submit">POST /move</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>Delta (dx, dy, dz)</label>
+              <div class="inline">
+                <input name="dx" type="number" placeholder="dx" />
+                <input name="dy" type="number" placeholder="dy" />
+                <input name="dz" type="number" placeholder="dz" />
+              </div>
+            </div>
+          </form>
+          <form class="action-form" data-endpoint="/move_to" data-method="POST">
+            <div class="field">
+              <label>Absolute (x, y, z)</label>
+              <div class="inline">
+                <input name="x" type="number" placeholder="x" />
+                <input name="y" type="number" placeholder="y" />
+                <input name="z" type="number" placeholder="z" />
+                <button type="submit">POST /move_to</button>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Interaction</h2>
+          <form class="action-form" data-endpoint="/follow" data-method="POST">
+            <div class="inline">
+              <input name="target" type="text" placeholder="player name" />
+              <button type="submit">POST /follow</button>
+            </div>
+          </form>
+          <form class="action-form" data-endpoint="/stop" data-method="POST">
+            <button type="submit">POST /stop</button>
+          </form>
+          <div class="split">
+            <form class="action-form" data-endpoint="/attack" data-method="POST">
+              <div class="inline">
+                <input name="target" type="text" placeholder="target" />
+                <button type="submit">POST /attack</button>
+              </div>
+            </form>
+            <form class="action-form" data-endpoint="/approach" data-method="POST">
+              <div class="inline">
+                <input name="target" type="text" placeholder="target" />
+                <button type="submit">POST /approach</button>
+              </div>
+            </form>
+          </div>
+          <div class="split">
+            <form class="action-form" data-endpoint="/interact" data-method="POST">
+              <div class="inline">
+                <input name="target" type="text" placeholder="target" />
+                <button type="submit">POST /interact</button>
+              </div>
+            </form>
+            <form class="action-form" data-endpoint="/fight" data-method="POST">
+              <div class="inline">
+                <input name="target" type="text" placeholder="target" />
+                <button type="submit">POST /fight</button>
+              </div>
+            </form>
+          </div>
+          <form class="action-form" data-endpoint="/teleport" data-method="POST">
+            <div class="inline">
+              <input name="target" type="text" placeholder="player name" />
+              <button type="submit">POST /teleport</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Items</h2>
+          <form class="action-form" data-endpoint="/wield" data-method="POST">
+            <div class="inline">
+              <input name="item" type="text" placeholder="item name or slot" />
+              <button type="submit">POST /wield</button>
+            </div>
+          </form>
+          <form class="action-form" data-endpoint="/use" data-method="POST">
+            <div class="inline">
+              <input name="item" type="text" placeholder="item name (optional)" />
+              <button type="submit">POST /use</button>
+            </div>
+          </form>
+          <form class="action-form" data-endpoint="/drop" data-method="POST">
+            <div class="inline">
+              <input name="item" type="text" placeholder="item name (optional)" />
+              <input name="count" type="number" min="1" placeholder="count" />
+              <button type="submit">POST /drop</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Chat</h2>
+          <form class="action-form" data-endpoint="/chat" data-method="POST">
+            <div class="field">
+              <label>Message</label>
+              <div class="inline">
+                <input name="message" type="text" placeholder="hello world" />
+                <button type="submit">POST /chat</button>
+              </div>
+            </div>
+          </form>
+          <form class="action-form" data-endpoint="/chat" data-method="GET">
+            <div class="inline">
+              <input name="since" type="number" placeholder="since id" />
+              <input name="limit" type="number" min="1" max="100" placeholder="limit" />
+              <button type="submit">GET /chat</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>World</h2>
+          <form class="action-form" data-endpoint="/mine" data-method="POST">
+            <div class="field">
+              <label>Mine (optional x, y, z)</label>
+              <div class="inline">
+                <input name="x" type="number" placeholder="x" />
+                <input name="y" type="number" placeholder="y" />
+                <input name="z" type="number" placeholder="z" />
+                <button type="submit">POST /mine</button>
+              </div>
+            </div>
+          </form>
+          <form class="action-form" data-endpoint="/place" data-method="POST">
+            <div class="field">
+              <label>Place (optional x, y, z)</label>
+              <div class="inline">
+                <input name="x" type="number" placeholder="x" />
+                <input name="y" type="number" placeholder="y" />
+                <input name="z" type="number" placeholder="z" />
+                <button type="submit">POST /place</button>
+              </div>
+            </div>
+          </form>
+          <form class="action-form" data-endpoint="/sleep" data-method="POST">
+            <div class="inline">
+              <input name="radius" type="number" min="1" max="20" placeholder="radius" />
+              <button type="submit">POST /sleep</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Status</h2>
+          <div class="button-row">
+            <form class="action-form" data-endpoint="/health" data-method="GET">
+              <button type="submit">GET /health</button>
+            </form>
+            <form class="action-form" data-endpoint="/where" data-method="GET">
+              <button type="submit">GET /where</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="card output">
+          <div class="output-header">
+            <h2>Response</h2>
+            <div id="requestMeta" class="meta">No requests yet.</div>
+          </div>
+          <pre id="output" class="output-body">Waiting for a request...</pre>
+        </div>
+      </section>
+    </main>
+
+    <script src="controller.js"></script>
+  </body>
+</html>
