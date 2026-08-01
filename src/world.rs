@@ -83,82 +83,110 @@ impl World {
         format!("content:{}", node.content)
     }
 
-    pub fn is_solid(&self, node_pos: IVec3) -> bool {
+    /// Returns `None` when the containing mapblock is not loaded. Loaded air and
+    /// non-walkable nodes return an empty vector.
+    pub fn collision_boxes(&self, node_pos: IVec3) -> Option<Vec<Aabb>> {
         let node = match self.get_node(node_pos) {
             Some(node) => node,
-            None => return false,
+            None => return None,
         };
-        if self.is_air_or_ignore(node) {
-            return false;
+        if node.content == IGNORE_CONTENT_ID {
+            return None;
         }
-        if let Some(manager) = self.nodedef.as_ref() {
-            if let Some(features) = manager.get(node.content) {
-                return features.walkable;
-            }
-        }
-        true
-    }
-
-    pub fn collision_boxes(&self, node_pos: IVec3) -> Vec<Aabb> {
-        let node = match self.get_node(node_pos) {
-            Some(node) => node,
-            None => return Vec::new(),
-        };
-        if self.is_air_or_ignore(node) {
-            return Vec::new();
+        if node.content == AIR_CONTENT_ID {
+            return Some(Vec::new());
         }
         if let Some(manager) = self.nodedef.as_ref() {
             if let Some(features) = manager.get(node.content) {
                 if !features.walkable {
-                    return Vec::new();
+                    return Some(Vec::new());
                 }
                 let collision = &features.collision_box;
                 match collision.box_type {
                     NodeBoxType::Regular => {
-                        return vec![Aabb {
+                        return Some(vec![Aabb {
                             min: crate::mtp::Vec3 {
-                                x: 0.0,
-                                y: 0.0,
-                                z: 0.0,
+                                x: -0.5,
+                                y: -0.5,
+                                z: -0.5,
                             },
                             max: crate::mtp::Vec3 {
-                                x: 1.0,
-                                y: 1.0,
-                                z: 1.0,
+                                x: 0.5,
+                                y: 0.5,
+                                z: 0.5,
                             },
-                        }];
+                        }]);
                     }
                     NodeBoxType::Fixed | NodeBoxType::Leveled => {
                         if !collision.fixed.is_empty() {
-                            return collision.fixed.clone();
+                            return Some(collision.fixed.clone());
                         }
                     }
                     NodeBoxType::WallMounted => {
-                        return vec![collision.wall_side];
+                        let mounted = node.param2 & 0x07;
+                        let box_ = match mounted {
+                            0 | 6 => collision.wall_top,
+                            1 | 7 => collision.wall_bottom,
+                            _ => collision.wall_side,
+                        };
+                        return Some(vec![box_]);
                     }
                     NodeBoxType::Connected => {
                         if !collision.fixed.is_empty() {
-                            return collision.fixed.clone();
+                            return Some(collision.fixed.clone());
                         }
                         if !collision.connected.disconnected.is_empty() {
-                            return collision.connected.disconnected.clone();
+                            return Some(collision.connected.disconnected.clone());
                         }
                     }
                 }
             }
         }
-        vec![Aabb {
+        Some(vec![Aabb {
             min: crate::mtp::Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
+                x: -0.5,
+                y: -0.5,
+                z: -0.5,
             },
             max: crate::mtp::Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
+                x: 0.5,
+                y: 0.5,
+                z: 0.5,
             },
-        }]
+        }])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_node(&mut self, node_pos: IVec3, walkable: bool) {
+        const TEST_CONTENT_ID: u16 = 1;
+        let block_pos = BlockPos {
+            x: div_floor(node_pos.x, MAP_BLOCKSIZE) as i16,
+            y: div_floor(node_pos.y, MAP_BLOCKSIZE) as i16,
+            z: div_floor(node_pos.z, MAP_BLOCKSIZE) as i16,
+        };
+        let local = IVec3 {
+            x: mod_floor(node_pos.x, MAP_BLOCKSIZE),
+            y: mod_floor(node_pos.y, MAP_BLOCKSIZE),
+            z: mod_floor(node_pos.z, MAP_BLOCKSIZE),
+        };
+        let idx =
+            (local.z * MAP_BLOCKSIZE * MAP_BLOCKSIZE + local.y * MAP_BLOCKSIZE + local.x) as usize;
+        let block = self.blocks.entry(block_pos).or_insert_with(|| MapBlock {
+            nodes: vec![MapNode::default(); NODECOUNT],
+        });
+        block.nodes[idx] = MapNode {
+            content: TEST_CONTENT_ID,
+            ..MapNode::default()
+        };
+
+        let manager = self.nodedef.get_or_insert_with(NodeDefManager::default);
+        if manager.features.len() <= TEST_CONTENT_ID as usize {
+            manager.features.resize(
+                TEST_CONTENT_ID as usize + 1,
+                crate::nodedef::ContentFeatures::default(),
+            );
+        }
+        manager.features[TEST_CONTENT_ID as usize].walkable = walkable;
     }
 }
 
@@ -382,16 +410,4 @@ fn mod_floor(a: i32, b: i32) -> i32 {
         r += b;
     }
     r
-}
-
-fn read_u8(cursor: &mut Cursor<Vec<u8>>) -> Result<u8> {
-    let mut buf = [0u8; 1];
-    cursor.read_exact(&mut buf).context("read u8")?;
-    Ok(buf[0])
-}
-
-fn read_u16(cursor: &mut Cursor<Vec<u8>>) -> Result<u16> {
-    let mut buf = [0u8; 2];
-    cursor.read_exact(&mut buf).context("read u16")?;
-    Ok(u16::from_be_bytes(buf))
 }

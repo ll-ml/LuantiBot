@@ -27,7 +27,9 @@ use mtp::{
     ActiveObjectMessage, AuthChoice, MtpConnection, MtpEvent, PlayerState, TracePacket, Vec3,
 };
 use nodedef::parse_nodedef_zstd;
-use physics::{snap_to_ground_height, step_player_bs, InputState, PlayerCollider};
+use physics::{
+    snap_to_ground_height, step_player_bs, InputState, PhysicsParams, PlayerCollider,
+};
 use srp::SrpClient;
 use world::World;
 
@@ -122,7 +124,7 @@ enum Commands {
         #[arg(long, default_value = "/bot_stop")]
         stop_cmd: String,
         /// Follow speed in nodes/sec
-        #[arg(long, default_value = "80.0")]
+        #[arg(long, default_value = "2.0")]
         follow_speed: f32,
         /// Follow distance in nodes
         #[arg(long, default_value = "2.0")]
@@ -375,13 +377,14 @@ fn handshake(address: &str, player: &str) -> Result<()> {
                     conn.send_control_disco()?;
                     return Ok(());
                 }
-                MtpEvent::AuthAccept => {
+                MtpEvent::AuthAccept { .. } => {
                     conn.send_control_disco()?;
                     return Ok(());
                 }
                 MtpEvent::NodeDef { .. }
                 | MtpEvent::ItemDef
                 | MtpEvent::MediaAnnounce
+                | MtpEvent::Movement(_)
                 | MtpEvent::ActiveObjectRemoveAdd { .. }
                 | MtpEvent::ActiveObjectMessages { .. } => {}
                 MtpEvent::SrpBytesSB { .. } => {}
@@ -453,7 +456,7 @@ fn login(address: &str, player: &str, password: &str) -> Result<()> {
                         conn.send_srp_m(&m)?;
                     }
                 }
-                MtpEvent::AuthAccept => {
+                MtpEvent::AuthAccept { .. } => {
                     println!("auth: accepted");
                     conn.send_init2()?;
                     conn.send_client_ready()?;
@@ -464,6 +467,7 @@ fn login(address: &str, player: &str, password: &str) -> Result<()> {
                 MtpEvent::NodeDef { .. }
                 | MtpEvent::ItemDef
                 | MtpEvent::MediaAnnounce
+                | MtpEvent::Movement(_)
                 | MtpEvent::ActiveObjectRemoveAdd { .. }
                 | MtpEvent::ActiveObjectMessages { .. } => {}
                 MtpEvent::MovePlayer { .. } => {}
@@ -547,7 +551,7 @@ fn connect(address: &str, player: &str, password: &str) -> Result<()> {
                         conn.send_srp_m(&m)?;
                     }
                 }
-                MtpEvent::AuthAccept => {
+                MtpEvent::AuthAccept { .. } => {
                     conn.send_init2()?;
                     need_client_ready = true;
                     ready = true;
@@ -577,6 +581,7 @@ fn connect(address: &str, player: &str, password: &str) -> Result<()> {
                     println!("got media announce; sending have_media");
                     conn.send_have_media()?;
                 }
+                MtpEvent::Movement(_) => {}
                 MtpEvent::BlockData { .. } => {}
                 MtpEvent::ActiveObjectRemoveAdd { .. } | MtpEvent::ActiveObjectMessages { .. } => {}
                 MtpEvent::AccessDenied { reason } => {
@@ -667,7 +672,7 @@ fn send_chat(address: &str, player: &str, password: &str, message: &str) -> Resu
                         conn.send_srp_m(&m)?;
                     }
                 }
-                MtpEvent::AuthAccept => {
+                MtpEvent::AuthAccept { .. } => {
                     conn.send_init2()?;
                     conn.send_client_ready()?;
                     sent_client_ready = true;
@@ -676,6 +681,7 @@ fn send_chat(address: &str, player: &str, password: &str, message: &str) -> Resu
                 MtpEvent::ItemDef => {}
                 MtpEvent::NodeDef { .. } => {}
                 MtpEvent::MediaAnnounce => {}
+                MtpEvent::Movement(_) => {}
                 MtpEvent::ActiveObjectRemoveAdd { .. } | MtpEvent::ActiveObjectMessages { .. } => {}
                 MtpEvent::AccessDenied { reason } => {
                     bail!("access denied: {reason}");
@@ -750,7 +756,7 @@ fn observe(address: &str, player: &str, password: &str, seconds: u64, interval: 
                         conn.send_srp_m(&m)?;
                     }
                 }
-                MtpEvent::AuthAccept => {
+                MtpEvent::AuthAccept { .. } => {
                     conn.send_init2()?;
                     need_client_ready = true;
                     ready = true;
@@ -764,6 +770,7 @@ fn observe(address: &str, player: &str, password: &str, seconds: u64, interval: 
                 MtpEvent::MediaAnnounce => {
                     conn.send_have_media()?;
                 }
+                MtpEvent::Movement(_) => {}
                 MtpEvent::MovePlayer { pos, pitch, yaw } => {
                     if !got_spawn {
                         state.pos = pos;
@@ -878,7 +885,7 @@ fn trace_session(address: &str, player: &str, password: &str, seconds: u64) -> R
                             conn.send_srp_m(&m)?;
                         }
                     }
-                    MtpEvent::AuthAccept => {
+                    MtpEvent::AuthAccept { .. } => {
                         conn.send_init2()?;
                         need_client_ready = true;
                         ready = true;
@@ -892,6 +899,7 @@ fn trace_session(address: &str, player: &str, password: &str, seconds: u64) -> R
                     MtpEvent::MediaAnnounce => {
                         conn.send_have_media()?;
                     }
+                    MtpEvent::Movement(_) => {}
                     MtpEvent::MovePlayer { pos, pitch, yaw } => {
                         if !got_spawn {
                             state.pos = pos;
@@ -982,8 +990,14 @@ fn print_trace_json(t_ms: u128, trace: &TracePacket, event: Option<&MtpEvent>) {
                 out.push_str(&format!("\"proto_ver\":{},", proto_ver));
                 out.push_str(&format!("\"ser_ver\":{}", ser_ver));
             }
-            MtpEvent::AuthAccept => {
-                out.push_str("\"type\":\"AuthAccept\"");
+            MtpEvent::AuthAccept {
+                recommended_send_interval,
+            } => {
+                out.push_str("\"type\":\"AuthAccept\",");
+                out.push_str(&format!(
+                    "\"recommended_send_interval\":{}",
+                    recommended_send_interval
+                ));
             }
             MtpEvent::MovePlayer { pos, pitch, yaw } => {
                 out.push_str("\"type\":\"MovePlayer\",");
@@ -1003,6 +1017,9 @@ fn print_trace_json(t_ms: u128, trace: &TracePacket, event: Option<&MtpEvent>) {
             }
             MtpEvent::MediaAnnounce => {
                 out.push_str("\"type\":\"MediaAnnounce\"");
+            }
+            MtpEvent::Movement(_) => {
+                out.push_str("\"type\":\"Movement\"");
             }
             MtpEvent::BlockData { pos, data } => {
                 out.push_str("\"type\":\"BlockData\",");
@@ -1068,24 +1085,25 @@ fn escape_json(value: &str) -> String {
     out
 }
 
-fn bs_to_nodes(pos: Vec3) -> Vec3 {
-    Vec3 {
-        x: pos.x / 10.0,
-        y: pos.y / 10.0,
-        z: pos.z / 10.0,
-    }
-}
-
 fn advance_position_bs(state: &mut PlayerState, input: InputState, dt: f32) {
-    let speed = if input.forward {
-        input.speed * 10.0
+    if !dt.is_finite() || dt <= 0.0 {
+        state.speed = Vec3::default();
+        return;
+    }
+    let speed = if input.forward && input.speed.is_finite() {
+        input.speed.max(0.0) * 10.0
+    } else {
+        0.0
+    };
+    let yaw = if input.yaw.is_finite() {
+        input.yaw
     } else {
         0.0
     };
     let dir = Vec3 {
-        x: input.yaw.sin(),
+        x: -yaw.sin(),
         y: 0.0,
-        z: input.yaw.cos(),
+        z: yaw.cos(),
     };
     let desired = Vec3 {
         x: dir.x * speed,
@@ -1102,15 +1120,9 @@ fn advance_position_bs(state: &mut PlayerState, input: InputState, dt: f32) {
 }
 
 fn apply_ground_snap(state: &mut PlayerState, world: &World, collider: PlayerCollider) {
-    let mut probe = state.pos;
-    probe.y += 1.0;
-    if let Some(y) = snap_to_ground_height(probe, world, collider) {
-        let target = y + 0.5;
-        if target >= state.pos.y {
-            state.pos.y = target;
-            state.speed.y = 0.0;
-        } else if state.pos.y - target <= 2.0 {
-            state.pos.y = target.max(state.pos.y);
+    if let Some(y) = snap_to_ground_height(state.pos, world, collider) {
+        if (state.pos.y - y).abs() <= 1.0 {
+            state.pos.y = y;
             state.speed.y = 0.0;
         }
     }
@@ -1303,7 +1315,6 @@ enum ApiCommand {
     },
     ObserveServer {
         radius: i32,
-        reply: mpsc::Sender<String>,
     },
 }
 
@@ -1383,54 +1394,6 @@ fn parse_control_command(message: &str) -> Option<ControlCommand> {
         "!where" => Some(ControlCommand::Where),
         _ => None,
     }
-}
-
-fn handle_control_command(
-    conn: &mut MtpConnection,
-    cmd: &ControlCommand,
-    tp_cmd: &str,
-    follow_cmd: &str,
-    stop_cmd: &str,
-    state: &PlayerState,
-) -> Result<()> {
-    match cmd {
-        ControlCommand::Follow(target) => {
-            if !follow_cmd.is_empty() {
-                let msg = follow_cmd.replace("{player}", target);
-                conn.send_chat_message(&msg)?;
-                println!("follow command from chat: {}", msg);
-            }
-        }
-        ControlCommand::Teleport(target) => {
-            if !tp_cmd.is_empty() {
-                let msg = tp_cmd.replace("{player}", target);
-                conn.send_chat_message(&msg)?;
-                println!("teleport command from chat: {}", msg);
-            }
-        }
-        ControlCommand::Stop => {
-            if !stop_cmd.is_empty() {
-                conn.send_chat_message(stop_cmd)?;
-                println!("stop command from chat: {}", stop_cmd);
-            }
-        }
-        ControlCommand::Where => {
-            let msg = format!(
-                "pos=({:.2},{:.2},{:.2})",
-                state.pos.x, state.pos.y, state.pos.z
-            );
-            conn.send_chat_message(&msg)?;
-            println!("where response: {}", msg);
-        }
-        ControlCommand::Attack(_) => {}
-        ControlCommand::AttackAll(_) => {}
-        ControlCommand::AttackMobs(_) => {}
-        ControlCommand::Sleep(_) => {}
-        ControlCommand::Approach(_) => {}
-        ControlCommand::Interact(_) => {}
-        ControlCommand::Fight(_) => {}
-    }
-    Ok(())
 }
 
 fn parse_allowlist(value: &str) -> Vec<String> {
@@ -1574,7 +1537,7 @@ fn handle_api_commands(
                 );
                 let _ = reply.send(json);
             }
-            ApiCommand::ObserveServer { radius, reply: _ } => {
+            ApiCommand::ObserveServer { radius } => {
                 let cmd = format!("/bot_observe {}", radius);
                 let _ = conn.send_chat_message(&cmd);
             }
@@ -1635,6 +1598,11 @@ fn run_api_server(
         let method = parts.next().unwrap_or("");
         let path = parts.next().unwrap_or("");
 
+        if method == "OPTIONS" {
+            write_http_response(&mut stream, "204 No Content", "text/plain", "");
+            continue;
+        }
+
         let mut auth_ok = token.is_empty();
         for line in lines.clone() {
             if line.trim().is_empty() {
@@ -1662,7 +1630,7 @@ fn run_api_server(
         let params = parse_query(query);
 
         if !auth_ok {
-            let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\n\r\n");
+            write_http_response(&mut stream, "401 Unauthorized", "text/plain", "unauthorized");
             continue;
         }
 
@@ -1694,7 +1662,12 @@ fn run_api_server(
                         response_type = "application/json";
                     }
                     Err(_) => {
-                        let _ = stream.write_all(b"HTTP/1.1 504 Gateway Timeout\r\n\r\n");
+                        write_http_response(
+                            &mut stream,
+                            "504 Gateway Timeout",
+                            "text/plain",
+                            "observe timeout",
+                        );
                         continue;
                     }
                 }
@@ -1709,15 +1682,15 @@ fn run_api_server(
                 if let Ok(mut slot) = pending_observe.lock() {
                     *slot = Some(reply_tx);
                 }
-                let _ = tx.send(ApiCommand::ObserveServer {
-                    radius,
-                    reply: mpsc::channel().0,
-                });
+                let _ = tx.send(ApiCommand::ObserveServer { radius });
                 match reply_rx.recv_timeout(Duration::from_secs(2)) {
                     Ok(body) => response = body,
                     Err(_) => {
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain\r\nContent-Length: 21\r\n\r\nobserve_server timeout",
+                        write_http_response(
+                            &mut stream,
+                            "504 Gateway Timeout",
+                            "text/plain",
+                            "observe_server timeout",
                         );
                         continue;
                     }
@@ -1871,8 +1844,11 @@ fn run_api_server(
                         response_type = "application/json";
                     }
                     Err(_) => {
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\nmine timeout",
+                        write_http_response(
+                            &mut stream,
+                            "504 Gateway Timeout",
+                            "text/plain",
+                            "mine timeout",
                         );
                         continue;
                     }
@@ -1897,8 +1873,11 @@ fn run_api_server(
                         response_type = "application/json";
                     }
                     Err(_) => {
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nplace timeout",
+                        write_http_response(
+                            &mut stream,
+                            "504 Gateway Timeout",
+                            "text/plain",
+                            "place timeout",
                         );
                         continue;
                     }
@@ -1934,8 +1913,11 @@ fn run_api_server(
                         response_type = "application/json";
                     }
                     Err(_) => {
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\ndrop timeout",
+                        write_http_response(
+                            &mut stream,
+                            "504 Gateway Timeout",
+                            "text/plain",
+                            "drop timeout",
                         );
                         continue;
                     }
@@ -1947,7 +1929,12 @@ fn run_api_server(
                     .cloned()
                     .or_else(|| parse_json_field(&body, "item"));
                 let Some(item) = item else {
-                    handled = false;
+                    write_http_response(
+                        &mut stream,
+                        "400 Bad Request",
+                        "application/json",
+                        "{\"error\":\"missing_item\"}",
+                    );
                     continue;
                 };
                 let (reply_tx, reply_rx) = mpsc::channel();
@@ -1961,8 +1948,11 @@ fn run_api_server(
                         response_type = "application/json";
                     }
                     Err(_) => {
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nwield timeout",
+                        write_http_response(
+                            &mut stream,
+                            "504 Gateway Timeout",
+                            "text/plain",
+                            "wield timeout",
                         );
                         continue;
                     }
@@ -1984,8 +1974,11 @@ fn run_api_server(
                         response_type = "application/json";
                     }
                     Err(_) => {
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain\r\nContent-Length: 11\r\n\r\nuse timeout",
+                        write_http_response(
+                            &mut stream,
+                            "504 Gateway Timeout",
+                            "text/plain",
+                            "use timeout",
                         );
                         continue;
                     }
@@ -2003,11 +1996,7 @@ fn run_api_server(
                     response = json_error("missing_message");
                     response_type = "application/json";
                 } else {
-                    let clipped = if trimmed.len() > 256 {
-                        trimmed[..256].to_string()
-                    } else {
-                        trimmed.to_string()
-                    };
+                    let clipped: String = trimmed.chars().take(256).collect();
                     let _ = tx.send(ApiCommand::Say(clipped));
                     response = json_ok();
                     response_type = "application/json";
@@ -2101,16 +2090,9 @@ fn run_api_server(
         }
 
         if handled {
-            let body = response;
-            let reply = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
-                response_type,
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(reply.as_bytes());
+            write_http_response(&mut stream, "200 OK", response_type, &response);
         } else {
-            let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
+            write_http_response(&mut stream, "400 Bad Request", "text/plain", "bad request");
         }
     }
 }
@@ -2187,9 +2169,19 @@ fn json_error(message: &str) -> String {
 
 fn write_json_error(stream: &mut std::net::TcpStream, status: &str, message: &str) {
     let body = json_error(message);
+    write_http_response(stream, status, "application/json", &body);
+}
+
+fn write_http_response(
+    stream: &mut std::net::TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &str,
+) {
     let reply = format!(
-        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type\r\nConnection: close\r\n\r\n{}",
         status,
+        content_type,
         body.len(),
         body
     );
@@ -2243,8 +2235,8 @@ fn yaw_for_direction(yaw: f32, dir: &MoveDirection) -> f32 {
     match dir {
         MoveDirection::Forward => yaw,
         MoveDirection::Backward => yaw + PI,
-        MoveDirection::Left => yaw - PI * 0.5,
-        MoveDirection::Right => yaw + PI * 0.5,
+        MoveDirection::Left => yaw + PI * 0.5,
+        MoveDirection::Right => yaw - PI * 0.5,
     }
 }
 
@@ -2264,15 +2256,29 @@ fn approach_angle(current: f32, target: f32, factor: f32) -> f32 {
 }
 
 fn build_move_goal(state: &PlayerState, request: MoveRequest, default_speed: f32) -> MoveGoal {
-    let speed = request.speed.unwrap_or(default_speed).max(0.1);
-    let stop_dist = 5.0;
+    let default_speed = if default_speed.is_finite() && default_speed > 0.0 {
+        default_speed
+    } else {
+        4.0
+    };
+    let requested_speed = request.speed.unwrap_or(default_speed);
+    let speed = if requested_speed.is_finite() {
+        requested_speed.max(0.1)
+    } else {
+        default_speed.max(0.1)
+    };
+    let stop_dist = 0.5;
     let target = match request.spec {
         MoveSpec::Direction { dir, steps } => {
-            let steps = steps.max(0.0);
+            let steps = if steps.is_finite() {
+                steps.max(0.0)
+            } else {
+                0.0
+            };
             let step_bs = steps * 10.0;
             let yaw = yaw_for_direction(state.yaw, &dir);
             let dir_vec = Vec3 {
-                x: yaw.sin(),
+                x: -yaw.sin(),
                 y: 0.0,
                 z: yaw.cos(),
             };
@@ -2282,15 +2288,20 @@ fn build_move_goal(state: &PlayerState, request: MoveRequest, default_speed: f32
                 z: state.pos.z + dir_vec.z * step_bs,
             }
         }
-        MoveSpec::Delta { dx, dy, dz } => Vec3 {
-            x: state.pos.x + dx * 10.0,
-            y: state.pos.y + dy * 10.0,
-            z: state.pos.z + dz * 10.0,
-        },
+        MoveSpec::Delta { dx, dy, dz } => {
+            let finite_or_zero = |value: f32| if value.is_finite() { value } else { 0.0 };
+            Vec3 {
+                x: state.pos.x + finite_or_zero(dx) * 10.0,
+                y: state.pos.y + finite_or_zero(dy) * 10.0,
+                z: state.pos.z + finite_or_zero(dz) * 10.0,
+            }
+        }
         MoveSpec::Target { x, y, z } => Vec3 {
-            x: x * 10.0,
-            y: y.unwrap_or(state.pos.y / 10.0) * 10.0,
-            z: z * 10.0,
+            x: if x.is_finite() { x * 10.0 } else { state.pos.x },
+            y: y.filter(|value| value.is_finite())
+                .unwrap_or(state.pos.y / 10.0)
+                * 10.0,
+            z: if z.is_finite() { z * 10.0 } else { state.pos.z },
         },
     };
     MoveGoal {
@@ -2427,7 +2438,7 @@ fn build_observe_json(
 }
 
 fn facing_from_yaw(yaw: f32) -> &'static str {
-    let x = yaw.sin();
+    let x = -yaw.sin();
     let z = yaw.cos();
     if x.abs() > z.abs() {
         if x > 0.0 {
@@ -2607,6 +2618,7 @@ fn move_forward(
     let mut srp: Option<SrpClient> = None;
     let mut world = World::new();
     let collider = PlayerCollider::default();
+    let mut physics_params = PhysicsParams::default();
     let mut gotblocks_pending = Vec::new();
     let mut logged_blocks = false;
     let mut ser_ver: Option<u8> = None;
@@ -2654,7 +2666,7 @@ fn move_forward(
                         conn.send_srp_m(&m)?;
                     }
                 }
-                MtpEvent::AuthAccept => {
+                MtpEvent::AuthAccept { .. } => {
                     conn.send_init2()?;
                     need_client_ready = true;
                     ready = true;
@@ -2677,6 +2689,9 @@ fn move_forward(
                             println!("nodedef parse failed: {}", err);
                         }
                     }
+                }
+                MtpEvent::Movement(settings) => {
+                    physics_params = PhysicsParams::from_movement(settings);
                 }
                 MtpEvent::MediaAnnounce => {
                     println!("got media announce; sending have_media");
@@ -2741,22 +2756,34 @@ fn move_forward(
 
         if ready && got_spawn && last_send.elapsed() >= Duration::from_millis(200) {
             let elapsed = start_move.elapsed().as_secs_f32();
-            let dt = 0.2_f32;
+            let dt = last_send.elapsed().as_secs_f32().clamp(0.001, 0.25);
             let forward = elapsed <= seconds;
             let input = InputState {
                 forward,
+                jump: false,
+                auto_jump: true,
                 speed,
                 yaw: state.yaw,
             };
-            step_player_bs(&mut state, &world, collider, input, dt);
+            step_player_bs(
+                &mut state,
+                &world,
+                collider,
+                physics_params,
+                input,
+                dt,
+            );
 
+            state.key_pressed = 0;
             if forward {
-                state.key_pressed = protocol::KEY_FORWARD;
+                state.key_pressed |= protocol::KEY_FORWARD;
                 state.movement_speed = 1.0;
                 state.movement_dir = 0.0;
             } else {
-                state.key_pressed = 0;
                 state.movement_speed = 0.0;
+            }
+            if state.speed.y > 0.0 {
+                state.key_pressed |= protocol::KEY_JUMP;
             }
 
             conn.send_playerpos(&state)?;
@@ -2819,6 +2846,7 @@ fn follow_player(
     let mut srp: Option<SrpClient> = None;
     let mut world = World::new();
     let collider = PlayerCollider::default();
+    let mut physics_params = PhysicsParams::default();
     let mut gotblocks_pending = Vec::new();
     let mut ser_ver: Option<u8> = None;
     let mut proto_ver: Option<u16> = None;
@@ -2866,7 +2894,7 @@ fn follow_player(
                         conn.send_srp_m(&m)?;
                     }
                 }
-                MtpEvent::AuthAccept => {
+                MtpEvent::AuthAccept { .. } => {
                     conn.send_init2()?;
                     need_client_ready = true;
                     ready = true;
@@ -2889,6 +2917,9 @@ fn follow_player(
                             println!("nodedef parse failed: {}", err);
                         }
                     }
+                }
+                MtpEvent::Movement(settings) => {
+                    physics_params = PhysicsParams::from_movement(settings);
                 }
                 MtpEvent::MediaAnnounce => {
                     println!("got media announce; sending have_media");
@@ -3011,8 +3042,9 @@ fn follow_player(
         }
 
         if ready && got_spawn && last_send.elapsed() >= Duration::from_millis(200) {
-            let dt = 0.2_f32;
+            let dt = last_send.elapsed().as_secs_f32().clamp(0.001, 0.25);
             let mut forward = false;
+            let mut jump = false;
             if let Some(id) = follow_target_id {
                 if let Some(target) = players.get(&id) {
                     let dx = target.pos.x - state.pos.x;
@@ -3020,11 +3052,11 @@ fn follow_player(
                     let dz = target.pos.z - state.pos.z;
                     let dist = (dx * dx + dz * dz).sqrt();
                     if dist > 0.01 {
-                        let desired_yaw = dx.atan2(dz);
+                        let desired_yaw = (-dx).atan2(dz);
                         state.yaw = approach_angle(state.yaw, desired_yaw, 0.2);
                         let horiz = (dx * dx + dz * dz).sqrt();
                         if horiz > 0.01 {
-                            let desired_pitch = dy.atan2(horiz);
+                            let desired_pitch = (-dy).atan2(horiz);
                             state.pitch = approach_angle(state.pitch, desired_pitch, 0.2);
                         }
                     }
@@ -3035,6 +3067,12 @@ fn follow_player(
                     } else if dist < follow_stop {
                         forward = false;
                     }
+                    if dy > 5.0 {
+                        jump = true;
+                        if dist > 1.0 {
+                            forward = true;
+                        }
+                    }
                 } else {
                     println!("target id={} not in player map", id);
                 }
@@ -3043,19 +3081,30 @@ fn follow_player(
             }
             let input = InputState {
                 forward,
+                jump,
+                auto_jump: true,
                 speed,
                 yaw: state.yaw,
             };
-            advance_position_bs(&mut state, input, dt);
-            apply_ground_snap(&mut state, &world, collider);
+            step_player_bs(
+                &mut state,
+                &world,
+                collider,
+                physics_params,
+                input,
+                dt,
+            );
 
+            state.key_pressed = 0;
             if forward {
-                state.key_pressed = protocol::KEY_FORWARD;
+                state.key_pressed |= protocol::KEY_FORWARD;
                 state.movement_speed = 1.0;
                 state.movement_dir = 0.0;
             } else {
-                state.key_pressed = 0;
                 state.movement_speed = 0.0;
+            }
+            if jump || state.speed.y > 0.0 {
+                state.key_pressed |= protocol::KEY_JUMP;
             }
 
             conn.send_playerpos(&state)?;
@@ -3134,7 +3183,7 @@ fn follow_command(
                         conn.send_srp_m(&m)?;
                     }
                 }
-                MtpEvent::AuthAccept => {
+                MtpEvent::AuthAccept { .. } => {
                     conn.send_init2()?;
                     need_client_ready = true;
                     ready = true;
@@ -3284,6 +3333,7 @@ fn join_bot(
     }
     let mut world = World::new();
     let collider = PlayerCollider::default();
+    let mut physics_params = PhysicsParams::default();
     let mut gotblocks_pending = Vec::new();
     let mut ser_ver: Option<u8> = None;
     let mut proto_ver: Option<u16> = None;
@@ -3306,7 +3356,6 @@ fn join_bot(
     let mut pending_wield_deadline: Option<Instant> = None;
     let mut pending_use_deadline: Option<Instant> = None;
     let mut last_follow_debug: Option<Instant> = None;
-    let mut last_follow_pos: Option<Vec3> = None;
 
     loop {
         if let Some(event) = conn.recv_packet()? {
@@ -3343,7 +3392,7 @@ fn join_bot(
                         conn.send_srp_m(&m)?;
                     }
                 }
-                MtpEvent::AuthAccept => {
+                MtpEvent::AuthAccept { .. } => {
                     conn.send_init2()?;
                     need_client_ready = true;
                     ready = true;
@@ -3366,27 +3415,20 @@ fn join_bot(
                         }
                     }
                 }
+                MtpEvent::Movement(settings) => {
+                    physics_params = PhysicsParams::from_movement(settings);
+                }
                 MtpEvent::MediaAnnounce => {
                     conn.send_have_media()?;
                 }
                 MtpEvent::MovePlayer { pos, pitch, yaw } => {
                     last_server_pos = Some(pos);
-                    if !got_spawn {
-                        state.pos = pos;
-                        state.pitch = pitch;
-                        state.yaw = yaw;
-                        got_spawn = true;
-                    } else {
-                        let dx = pos.x - state.pos.x;
-                        let dy = pos.y - state.pos.y;
-                        let dz = pos.z - state.pos.z;
-                        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                        if dist > 100.0 {
-                            state.pos = pos;
-                            state.speed = Vec3::default();
-                            last_sent_pos = Some(pos);
-                        }
-                    }
+                    state.pos = pos;
+                    state.pitch = pitch;
+                    state.yaw = yaw;
+                    state.speed = Vec3::default();
+                    last_sent_pos = Some(pos);
+                    got_spawn = true;
                 }
                 MtpEvent::BlockData { pos, data } => {
                     let ver = ser_ver.unwrap_or(protocol::SER_FMT_VER_HIGHEST_READ);
@@ -3757,8 +3799,6 @@ fn join_bot(
                 if dist <= attack_range_bs {
                     if Instant::now() >= pending.send_at {
                         if pending.next_idx < pending.actions.len() {
-                            state.pos = target.pos;
-                            state.speed = Vec3::default();
                             conn.send_playeritem(0)?;
                             let action = pending.actions[pending.next_idx];
                             conn.send_interact_object(action, pending.id, &state)?;
@@ -3770,25 +3810,15 @@ fn join_bot(
                         }
                     }
                 } else {
-                    state.yaw = dx.atan2(dz);
-                    let attack_input = InputState {
-                        forward: true,
-                        speed: follow_speed,
-                        yaw: state.yaw,
-                    };
-                    if float {
-                        advance_position_bs(&mut state, attack_input, 0.2_f32);
-                    } else {
-                        step_player_bs(&mut state, &world, collider, attack_input, 0.2_f32);
-                    }
-                    last_sent_pos = Some(state.pos);
+                    state.yaw = (-dx).atan2(dz);
                 }
             }
         }
 
         if ready && got_spawn && last_send.elapsed() >= Duration::from_millis(200) {
-            let dt = 0.2_f32;
+            let dt = last_send.elapsed().as_secs_f32().clamp(0.001, 0.25);
             let mut forward = false;
+            let mut jump = false;
             let mut move_speed = follow_speed;
             let mut move_active = false;
             if float && !follow_enabled && move_goal.is_none() {
@@ -3800,15 +3830,32 @@ fn join_bot(
             }
             if let Some(goal) = move_goal.as_mut() {
                 let dx = goal.target.x - state.pos.x;
+                let dy = goal.target.y - state.pos.y;
                 let dz = goal.target.z - state.pos.z;
                 let dist = (dx * dx + dz * dz).sqrt();
-                if dist <= goal.stop_dist {
+                let needs_jump = dy > 5.0;
+                if dist <= goal.stop_dist && !needs_jump {
                     move_goal = None;
                 } else {
-                    state.yaw = dx.atan2(dz);
-                    forward = true;
+                    state.yaw = (-dx).atan2(dz);
+                    forward = dist > goal.stop_dist;
+                    jump = needs_jump;
                     move_speed = goal.speed;
                     move_active = true;
+                }
+            }
+            if !move_active {
+                if let Some(pending) = pending_attack.as_ref() {
+                    if let Some(target) = players.get(&pending.id) {
+                        let dx = target.pos.x - state.pos.x;
+                        let dz = target.pos.z - state.pos.z;
+                        if (dx * dx + dz * dz).sqrt() > attack_range_bs {
+                            state.yaw = (-dx).atan2(dz);
+                            forward = true;
+                            move_speed = follow_speed;
+                            move_active = true;
+                        }
+                    }
                 }
             }
             if !move_active && follow_enabled {
@@ -3837,11 +3884,11 @@ fn join_bot(
                         let dz = target.pos.z - state.pos.z;
                         let dist = (dx * dx + dz * dz).sqrt();
                         if dist > 0.01 {
-                            let desired_yaw = dx.atan2(dz);
+                            let desired_yaw = (-dx).atan2(dz);
                             state.yaw = approach_angle(state.yaw, desired_yaw, 0.2);
                             let horiz = (dx * dx + dz * dz).sqrt();
                             if horiz > 0.01 {
-                                let desired_pitch = dy.atan2(horiz);
+                                let desired_pitch = (-dy).atan2(horiz);
                                 state.pitch = approach_angle(state.pitch, desired_pitch, 0.2);
                             }
                         }
@@ -3868,11 +3915,19 @@ fn join_bot(
                         } else if dist < follow_stop {
                             forward = false;
                         }
+                        if dy > 5.0 {
+                            jump = true;
+                            if dist > 1.0 {
+                                forward = true;
+                            }
+                        }
                     }
                 }
             }
             let input = InputState {
                 forward,
+                jump,
+                auto_jump: true,
                 speed: move_speed,
                 yaw: state.yaw,
             };
@@ -3903,48 +3958,27 @@ fn join_bot(
                     }
                 }
             } else {
-                step_player_bs(&mut state, &world, collider, input, dt);
-                if follow_enabled {
-                    if let Some(prev_follow) = last_follow_pos {
-                        let dx = state.pos.x - prev_follow.x;
-                        let dz = state.pos.z - prev_follow.z;
-                        let moved = (dx * dx + dz * dz).sqrt();
-                        if forward && moved < 0.05 {
-                            let nudge = follow_speed * 10.0 * dt * 2.5;
-                            state.pos.x += state.yaw.sin() * nudge;
-                            state.pos.z += state.yaw.cos() * nudge;
-                        }
-                    }
-                    last_follow_pos = Some(state.pos);
-                }
-                if let Some(prev) = last_sent_pos {
-                    let dx = state.pos.x - prev.x;
-                    let dy = state.pos.y - prev.y;
-                    let dz = state.pos.z - prev.z;
-                    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                    let max_delta = 5.0;
-                    if dist > max_delta {
-                        let scale = max_delta / dist;
-                        state.pos.x = prev.x + dx * scale;
-                        state.pos.y = prev.y + dy * scale;
-                        state.pos.z = prev.z + dz * scale;
-                    }
-                    state.speed = Vec3 {
-                        x: (state.pos.x - prev.x) / dt,
-                        y: (state.pos.y - prev.y) / dt,
-                        z: (state.pos.z - prev.z) / dt,
-                    };
-                }
+                step_player_bs(
+                    &mut state,
+                    &world,
+                    collider,
+                    physics_params,
+                    input,
+                    dt,
+                );
             }
 
+            state.key_pressed = 0;
             if forward {
-                state.key_pressed = protocol::KEY_FORWARD;
-                state.movement_speed = move_speed;
+                state.key_pressed |= protocol::KEY_FORWARD;
+                state.movement_speed = 1.0;
                 state.movement_dir = 0.0;
             } else {
-                state.key_pressed = 0;
                 state.movement_speed = 0.0;
                 state.movement_dir = 0.0;
+            }
+            if jump || (!float && state.speed.y > 0.0) {
+                state.key_pressed |= protocol::KEY_JUMP;
             }
 
             conn.send_playerpos(&state)?;

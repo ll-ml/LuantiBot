@@ -39,6 +39,7 @@ pub const TOCLIENT_CHAT_MESSAGE: u16 = 0x2f;
 pub const TOCLIENT_ACTIVE_OBJECT_REMOVE_ADD: u16 = 0x31;
 pub const TOCLIENT_ACTIVE_OBJECT_MESSAGES: u16 = 0x32;
 pub const TOCLIENT_BLOCKDATA: u16 = 0x20;
+pub const TOCLIENT_MOVEMENT: u16 = 0x45;
 
 pub const SER_FMT_VER_HIGHEST_READ: u8 = 29;
 pub const CLIENT_PROTOCOL_VERSION_MIN: u16 = 37;
@@ -49,6 +50,7 @@ pub const VERSION_MINOR: u8 = 16;
 pub const VERSION_PATCH: u8 = 0;
 
 pub const KEY_FORWARD: u32 = 1 << 0;
+pub const KEY_JUMP: u32 = 1 << 4;
 
 pub const AUTH_MECHANISM_FIRST_SRP: u32 = 0x04;
 pub const AUTH_MECHANISM_SRP: u32 = 0x02;

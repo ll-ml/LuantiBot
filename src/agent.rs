@@ -98,7 +98,6 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
         .context("build http client")?;
 
     let mut last_action = String::from("stop");
-    let mut last_announced_action = String::from("stop");
     let mut last_seen_chat_id = 0u64;
     let mut pending_chats: VecDeque<ChatMessageView> = VecDeque::new();
     let mut recent_say_messages: VecDeque<String> = VecDeque::new();
@@ -310,12 +309,6 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
                 last_action = action.action.clone();
                 if action.action != "stop" {
                     pending_observe = true;
-                }
-                if action.action != "stop" && action.action != "say" {
-                    let announce = format_action_message(&action);
-                    if !announce.is_empty() {
-                        last_announced_action = announce;
-                    }
                 }
                 if action.action != "stop" && action.action != "say" {
                     let now = Instant::now();
@@ -813,7 +806,7 @@ fn validate_action(action: AgentAction, obs: &ObservationView) -> AgentAction {
     }
 }
 
-fn validate_move(action: AgentAction, obs: &ObservationView) -> AgentAction {
+fn validate_move(action: AgentAction, _obs: &ObservationView) -> AgentAction {
     let dir = action
         .direction
         .as_deref()
@@ -1048,35 +1041,6 @@ fn http_post_json(
     let body = response.text().unwrap_or_default();
     ensure_success(status, &body).context("post response")?;
     Ok(body)
-}
-
-fn format_action_message(action: &AgentAction) -> String {
-    let name = action.action.to_lowercase();
-    match name.as_str() {
-        "move" => {
-            let dir = action
-                .direction
-                .clone()
-                .unwrap_or_else(|| "forward".to_string());
-            let steps = action.steps.unwrap_or(1.0).round().clamp(1.0, 3.0);
-            format!("Moving {} x{}", dir, steps as i32)
-        }
-        "follow" => {
-            let target = action
-                .target
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
-            format!("Following {}", target)
-        }
-        "attack" => {
-            let target = action
-                .target
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
-            format!("Attacking {}", target)
-        }
-        _ => "".to_string(),
-    }
 }
 
 fn post_json(client: &Client, url: &Url, body: &serde_json::Value) -> Result<(StatusCode, String)> {

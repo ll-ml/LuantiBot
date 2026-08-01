@@ -11,7 +11,7 @@ use crate::protocol::{
     TOCLIENT_ACCESS_DENIED, TOCLIENT_ACTIVE_OBJECT_MESSAGES, TOCLIENT_ACTIVE_OBJECT_REMOVE_ADD,
     TOCLIENT_ANNOUNCE_MEDIA, TOCLIENT_AUTH_ACCEPT, TOCLIENT_BLOCKDATA, TOCLIENT_CHAT_MESSAGE,
     TOCLIENT_HELLO, TOCLIENT_ITEMDEF, TOCLIENT_MOVE_PLAYER, TOCLIENT_NODEDEF,
-    TOCLIENT_SRP_BYTES_S_B, TOSERVER_CHAT_MESSAGE, TOSERVER_CLIENT_READY, TOSERVER_FIRST_SRP,
+    TOCLIENT_MOVEMENT, TOCLIENT_SRP_BYTES_S_B, TOSERVER_CHAT_MESSAGE, TOSERVER_CLIENT_READY, TOSERVER_FIRST_SRP,
     TOSERVER_GOTBLOCKS, TOSERVER_HAVE_MEDIA, TOSERVER_INIT, TOSERVER_INIT2, TOSERVER_INTERACT,
     TOSERVER_PLAYERITEM, TOSERVER_PLAYERPOS, TOSERVER_SRP_BYTES_A, TOSERVER_SRP_BYTES_M,
     VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH,
@@ -39,6 +39,41 @@ pub struct PlayerState {
     pub camera_inverted: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct MovementSettings {
+    pub acceleration_default: f32,
+    pub acceleration_air: f32,
+    pub acceleration_fast: f32,
+    pub speed_walk: f32,
+    pub speed_crouch: f32,
+    pub speed_fast: f32,
+    pub speed_climb: f32,
+    pub speed_jump: f32,
+    pub liquid_fluidity: f32,
+    pub liquid_fluidity_smooth: f32,
+    pub liquid_sink: f32,
+    pub gravity: f32,
+}
+
+impl Default for MovementSettings {
+    fn default() -> Self {
+        Self {
+            acceleration_default: 3.0,
+            acceleration_air: 2.0,
+            acceleration_fast: 10.0,
+            speed_walk: 4.0,
+            speed_crouch: 1.35,
+            speed_fast: 20.0,
+            speed_climb: 3.0,
+            speed_jump: 6.5,
+            liquid_fluidity: 1.0,
+            liquid_fluidity_smooth: 0.5,
+            liquid_sink: 10.0,
+            gravity: 9.81,
+        }
+    }
+}
+
 impl Default for PlayerState {
     fn default() -> Self {
         Self {
@@ -63,7 +98,10 @@ pub enum MtpEvent {
         proto_ver: u16,
         ser_ver: u8,
     },
-    AuthAccept,
+    AuthAccept {
+        recommended_send_interval: f32,
+    },
+    Movement(MovementSettings),
     MovePlayer {
         pos: Vec3,
         pitch: f32,
@@ -285,6 +323,7 @@ impl MtpConnection {
     }
 
     pub fn send_playerpos(&mut self, state: &PlayerState) -> Result<()> {
+        validate_outbound_player_state(state)?;
         let mut payload = Vec::new();
         payload.extend_from_slice(&TOSERVER_PLAYERPOS.to_be_bytes());
 
@@ -299,8 +338,8 @@ impl MtpConnection {
             let sx = (state.speed.x * scale).round() as i32;
             let sy = (state.speed.y * scale).round() as i32;
             let sz = (state.speed.z * scale).round() as i32;
-            let pitch = (state.pitch * 100.0).round() as i32;
-            let yaw = (state.yaw * 100.0).round() as i32;
+            let pitch = (state.pitch.to_degrees() * 100.0).round() as i32;
+            let yaw = (state.yaw.to_degrees() * 100.0).round() as i32;
             println!(
                 "playerpos ints pos=({}, {}, {}) speed=({}, {}, {}) pitch={} yaw={} keys={} fov={} range={} caminv={} ms={} md={}",
                 px,
@@ -321,8 +360,8 @@ impl MtpConnection {
         }
         write_v3s32(&mut payload, state.pos, scale);
         write_v3s32(&mut payload, state.speed, scale);
-        write_s32(&mut payload, state.pitch * 100.0);
-        write_s32(&mut payload, state.yaw * 100.0);
+        write_s32(&mut payload, state.pitch.to_degrees() * 100.0);
+        write_s32(&mut payload, state.yaw.to_degrees() * 100.0);
         write_u32(&mut payload, state.key_pressed);
         let fov_scaled = (state.fov * 80.0).round().clamp(0.0, 255.0) as u8;
         payload.push(fov_scaled);
@@ -354,6 +393,7 @@ impl MtpConnection {
         object_id: u16,
         state: &PlayerState,
     ) -> Result<()> {
+        validate_outbound_player_state(state)?;
         let mut payload = Vec::new();
         payload.extend_from_slice(&TOSERVER_INTERACT.to_be_bytes());
         payload.push(action);
@@ -469,12 +509,15 @@ impl MtpConnection {
 
     pub fn recv_packet(&mut self) -> Result<Option<MtpEvent>> {
         let mut recv = vec![0u8; 65535];
-        let (len, _) = match self.socket.recv_from(&mut recv) {
+        let (len, source) = match self.socket.recv_from(&mut recv) {
             Ok(v) => v,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
             Err(err) if err.kind() == std::io::ErrorKind::TimedOut => return Ok(None),
             Err(err) => return Err(err).context("recv packet"),
         };
+        if source != self.addr {
+            return Ok(None);
+        }
 
         if len < 8 {
             return Ok(None);
@@ -562,12 +605,15 @@ impl MtpConnection {
 
     pub fn recv_packet_trace(&mut self) -> Result<Option<(TracePacket, Option<MtpEvent>)>> {
         let mut recv = vec![0u8; 65535];
-        let (len, _) = match self.socket.recv_from(&mut recv) {
+        let (len, source) = match self.socket.recv_from(&mut recv) {
             Ok(v) => v,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
             Err(err) if err.kind() == std::io::ErrorKind::TimedOut => return Ok(None),
             Err(err) => return Err(err).context("recv packet"),
         };
+        if source != self.addr {
+            return Ok(None);
+        }
 
         if len < 8 {
             return Ok(None);
@@ -907,12 +953,23 @@ fn parse_to_client(cmd: u16, payload: &[u8]) -> Option<MtpEvent> {
                 ser_ver,
             })
         }
-        TOCLIENT_AUTH_ACCEPT => Some(MtpEvent::AuthAccept),
+        TOCLIENT_AUTH_ACCEPT => {
+            let mut offset = 0;
+            let _unused_pos = read_v3f32_slice(payload, &mut offset).ok()?;
+            if offset + 8 > payload.len() {
+                return None;
+            }
+            offset += 8; // map seed
+            let recommended_send_interval = read_f32_slice(payload, &mut offset).ok()?;
+            Some(MtpEvent::AuthAccept {
+                recommended_send_interval,
+            })
+        }
         TOCLIENT_MOVE_PLAYER => {
             let mut offset = 0;
-            let pos = read_v3f1000_or_f32(payload, &mut offset).ok()?;
-            let pitch = read_f1000_or_f32_slice(payload, &mut offset).ok()?;
-            let yaw = read_f1000_or_f32_slice(payload, &mut offset).ok()?;
+            let pos = read_v3f32_slice(payload, &mut offset).ok()?;
+            let pitch = read_f32_slice(payload, &mut offset).ok()?.to_radians();
+            let yaw = read_f32_slice(payload, &mut offset).ok()?.to_radians();
             if std::env::var("LUANTI_DEBUG_MOVEPLAYER")
                 .map(|v| v == "1")
                 .unwrap_or(false)
@@ -928,6 +985,24 @@ fn parse_to_client(cmd: u16, payload: &[u8]) -> Option<MtpEvent> {
                 );
             }
             Some(MtpEvent::MovePlayer { pos, pitch, yaw })
+        }
+        TOCLIENT_MOVEMENT => {
+            let mut offset = 0;
+            let mut next = || read_f32_slice(payload, &mut offset).ok();
+            Some(MtpEvent::Movement(MovementSettings {
+                acceleration_default: next()?,
+                acceleration_air: next()?,
+                acceleration_fast: next()?,
+                speed_walk: next()?,
+                speed_crouch: next()?,
+                speed_fast: next()?,
+                speed_climb: next()?,
+                speed_jump: next()?,
+                liquid_fluidity: next()?,
+                liquid_fluidity_smooth: next()?,
+                liquid_sink: next()?,
+                gravity: next()?,
+            }))
         }
         TOCLIENT_BLOCKDATA => {
             let mut offset = 0;
@@ -1016,19 +1091,31 @@ fn parse_to_client(cmd: u16, payload: &[u8]) -> Option<MtpEvent> {
 }
 
 fn write_string(buf: &mut Vec<u8>, s: &str) {
-    let len = s.len() as u16;
+    let mut len = s.len().min(u16::MAX as usize);
+    while !s.is_char_boundary(len) {
+        len -= 1;
+    }
+    let len = len as u16;
     buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend_from_slice(s.as_bytes());
+    buf.extend_from_slice(&s.as_bytes()[..len as usize]);
 }
 
 fn write_bytes(buf: &mut Vec<u8>, data: &[u8]) {
-    let len = data.len() as u16;
+    let len = data.len().min(u16::MAX as usize) as u16;
     buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend_from_slice(data);
+    buf.extend_from_slice(&data[..len as usize]);
 }
 
 fn write_wstring(buf: &mut Vec<u8>, s: &str) {
-    let wide: Vec<u16> = s.encode_utf16().collect();
+    let mut wide = Vec::new();
+    for ch in s.chars() {
+        let needed = ch.len_utf16();
+        if wide.len() + needed > u16::MAX as usize {
+            break;
+        }
+        let mut encoded = [0; 2];
+        wide.extend_from_slice(ch.encode_utf16(&mut encoded));
+    }
     let len = wide.len() as u16;
     buf.extend_from_slice(&len.to_be_bytes());
     for ch in wide {
@@ -1101,67 +1188,15 @@ fn read_u32_slice(buf: &[u8], offset: &mut usize) -> Result<u32> {
 }
 
 fn read_f32_slice(buf: &[u8], offset: &mut usize) -> Result<f32> {
-    if *offset + 4 > buf.len() {
-        bail!("read_f32_slice out of bounds");
-    }
-    let v = f32::from_be_bytes([
-        buf[*offset],
-        buf[*offset + 1],
-        buf[*offset + 2],
-        buf[*offset + 3],
-    ]);
-    *offset += 4;
-    Ok(v)
+    let raw = read_u32_slice(buf, offset)?;
+    Ok(f32::from_bits(raw))
 }
 
-fn read_f1000_slice(buf: &[u8], offset: &mut usize) -> Result<f32> {
-    let raw = read_i32_slice(buf, offset)?;
-    Ok(raw as f32 / 1000.0)
-}
-
-fn read_v3f1000(buf: &[u8], offset: &mut usize) -> Result<Vec3> {
-    let x = read_f1000_slice(buf, offset)?;
-    let y = read_f1000_slice(buf, offset)?;
-    let z = read_f1000_slice(buf, offset)?;
+fn read_v3f32_slice(buf: &[u8], offset: &mut usize) -> Result<Vec3> {
+    let x = read_f32_slice(buf, offset)?;
+    let y = read_f32_slice(buf, offset)?;
+    let z = read_f32_slice(buf, offset)?;
     Ok(Vec3 { x, y, z })
-}
-
-fn read_f1000_or_f32_slice(buf: &[u8], offset: &mut usize) -> Result<f32> {
-    if *offset + 4 > buf.len() {
-        bail!("read_f1000_or_f32_slice out of bounds");
-    }
-    let bytes = [
-        buf[*offset],
-        buf[*offset + 1],
-        buf[*offset + 2],
-        buf[*offset + 3],
-    ];
-    *offset += 4;
-    let f1000 = i32::from_be_bytes(bytes) as f32 / 1000.0;
-    let f32v = f32::from_be_bytes(bytes);
-    let use_f32 = f1000.abs() > 100000.0 && f32v.abs() <= 100000.0;
-    Ok(if use_f32 { f32v } else { f1000 })
-}
-
-fn read_v3f1000_or_f32(buf: &[u8], offset: &mut usize) -> Result<Vec3> {
-    let x = read_f1000_or_f32_slice(buf, offset)?;
-    let y = read_f1000_or_f32_slice(buf, offset)?;
-    let z = read_f1000_or_f32_slice(buf, offset)?;
-    Ok(Vec3 { x, y, z })
-}
-
-fn read_i32_slice(buf: &[u8], offset: &mut usize) -> Result<i32> {
-    if *offset + 4 > buf.len() {
-        bail!("read_i32_slice out of bounds");
-    }
-    let v = i32::from_be_bytes([
-        buf[*offset],
-        buf[*offset + 1],
-        buf[*offset + 2],
-        buf[*offset + 3],
-    ]);
-    *offset += 4;
-    Ok(v)
 }
 
 fn read_i16_slice(buf: &[u8], offset: &mut usize) -> Result<i16> {
@@ -1212,12 +1247,37 @@ fn write_v3s32(buf: &mut Vec<u8>, v: Vec3, scale: f32) {
     buf.extend_from_slice(&z.to_be_bytes());
 }
 
+fn validate_outbound_player_state(state: &PlayerState) -> Result<()> {
+    const MAX_POSITION_BS: f32 = 500_000.0;
+    const MAX_SPEED_BS: f32 = 10_000.0;
+    let position_valid = [state.pos.x, state.pos.y, state.pos.z]
+        .into_iter()
+        .all(|value| value.is_finite() && value.abs() <= MAX_POSITION_BS);
+    let speed_valid = [state.speed.x, state.speed.y, state.speed.z]
+        .into_iter()
+        .all(|value| value.is_finite() && value.abs() <= MAX_SPEED_BS);
+    if !position_valid || !speed_valid || !state.pitch.is_finite() || !state.yaw.is_finite() {
+        bail!(
+            "refusing unsafe player state: pos=({:.3},{:.3},{:.3}) speed=({:.3},{:.3},{:.3}) pitch={:.3} yaw={:.3}",
+            state.pos.x,
+            state.pos.y,
+            state.pos.z,
+            state.speed.x,
+            state.speed.y,
+            state.speed.z,
+            state.pitch,
+            state.yaw
+        );
+    }
+    Ok(())
+}
+
 fn write_playerpos_fields(buf: &mut Vec<u8>, state: &PlayerState) {
     let scale = 100.0;
     write_v3s32(buf, state.pos, scale);
     write_v3s32(buf, state.speed, scale);
-    write_s32(buf, state.pitch * 100.0);
-    write_s32(buf, state.yaw * 100.0);
+    write_s32(buf, state.pitch.to_degrees() * 100.0);
+    write_s32(buf, state.yaw.to_degrees() * 100.0);
     write_u32(buf, state.key_pressed);
     let fov_scaled = (state.fov * 80.0).round().clamp(0.0, 255.0) as u8;
     buf.push(fov_scaled);
@@ -1285,4 +1345,81 @@ pub enum AuthChoice {
 
 pub fn should_send_client_ready(got_itemdef: bool, got_nodedef: bool) -> bool {
     got_itemdef && got_nodedef
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn push_f32(buf: &mut Vec<u8>, value: f32) {
+        buf.extend_from_slice(&value.to_be_bytes());
+    }
+
+    #[test]
+    fn move_player_uses_network_f32_values() {
+        let mut payload = Vec::new();
+        for value in [7000.0, 250.0, 3500.0, -15.0, 90.0] {
+            push_f32(&mut payload, value);
+        }
+
+        let Some(MtpEvent::MovePlayer { pos, pitch, yaw }) =
+            parse_to_client(TOCLIENT_MOVE_PLAYER, &payload)
+        else {
+            panic!("MOVE_PLAYER did not parse");
+        };
+        assert_eq!(pos.x, 7000.0);
+        assert_eq!(pos.y, 250.0);
+        assert_eq!(pos.z, 3500.0);
+        assert!((pitch.to_degrees() + 15.0).abs() < 0.001);
+        assert!((yaw.to_degrees() - 90.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn movement_settings_use_network_f32_values() {
+        let values = [3.0, 2.0, 10.0, 4.0, 1.35, 20.0, 3.0, 6.5, 1.0, 0.5, 10.0, 9.81];
+        let mut payload = Vec::new();
+        for value in values {
+            push_f32(&mut payload, value);
+        }
+
+        let Some(MtpEvent::Movement(settings)) = parse_to_client(TOCLIENT_MOVEMENT, &payload)
+        else {
+            panic!("MOVEMENT did not parse");
+        };
+        assert_eq!(settings.acceleration_default, 3.0);
+        assert_eq!(settings.speed_walk, 4.0);
+        assert_eq!(settings.speed_fast, 20.0);
+        assert!((settings.gravity - 9.81).abs() < 0.001);
+    }
+
+    #[test]
+    fn auth_accept_interval_uses_network_f32_value() {
+        let mut payload = Vec::new();
+        for value in [0.0, 0.0, 0.0] {
+            push_f32(&mut payload, value);
+        }
+        payload.extend_from_slice(&123_u64.to_be_bytes());
+        push_f32(&mut payload, 0.1);
+
+        let Some(MtpEvent::AuthAccept {
+            recommended_send_interval,
+        }) = parse_to_client(TOCLIENT_AUTH_ACCEPT, &payload)
+        else {
+            panic!("AUTH_ACCEPT did not parse");
+        };
+        assert!((recommended_send_interval - 0.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn outbound_state_rejects_million_scale_coordinates() {
+        let state = PlayerState {
+            pos: Vec3 {
+                x: 1_200_000.0,
+                y: 250.0,
+                z: 3500.0,
+            },
+            ..PlayerState::default()
+        };
+        assert!(validate_outbound_player_state(&state).is_err());
+    }
 }

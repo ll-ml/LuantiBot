@@ -62,24 +62,6 @@ impl<'a> ByteReader<'a> {
         Ok(v)
     }
 
-    pub fn read_u64(&mut self) -> Result<u64> {
-        if self.offset + 8 > self.data.len() {
-            bail!("read_u64 out of bounds");
-        }
-        let v = u64::from_be_bytes([
-            self.data[self.offset],
-            self.data[self.offset + 1],
-            self.data[self.offset + 2],
-            self.data[self.offset + 3],
-            self.data[self.offset + 4],
-            self.data[self.offset + 5],
-            self.data[self.offset + 6],
-            self.data[self.offset + 7],
-        ]);
-        self.offset += 8;
-        Ok(v)
-    }
-
     pub fn read_f32(&mut self) -> Result<f32> {
         let raw = self.read_u32()?;
         Ok(f32::from_be_bytes(raw.to_be_bytes()))
@@ -115,12 +97,4 @@ impl<'a> ByteReader<'a> {
         Ok(out)
     }
 
-    pub fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
-        if self.offset + len > self.data.len() {
-            bail!("read_bytes out of bounds");
-        }
-        let out = self.data[self.offset..self.offset + len].to_vec();
-        self.offset += len;
-        Ok(out)
-    }
 }

@@ -141,3 +141,5 @@ clearBtn.addEventListener("click", () => {
 pingBtn.addEventListener("click", () => {
   sendRequest("/health", "GET", "");
 });
+
+sendRequest("/health", "GET", "");

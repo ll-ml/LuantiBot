@@ -9,22 +9,6 @@ pub struct Aabb {
     pub max: Vec3,
 }
 
-impl Aabb {
-    pub fn add_point(&mut self, p: Vec3) {
-        self.min.x = self.min.x.min(p.x);
-        self.min.y = self.min.y.min(p.y);
-        self.min.z = self.min.z.min(p.z);
-        self.max.x = self.max.x.max(p.x);
-        self.max.y = self.max.y.max(p.y);
-        self.max.z = self.max.z.max(p.z);
-    }
-
-    pub fn add_box(&mut self, other: Aabb) {
-        self.add_point(other.min);
-        self.add_point(other.max);
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Color {
     pub r: u8,
