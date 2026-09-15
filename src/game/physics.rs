@@ -1,5 +1,5 @@
-use crate::mtp::{MovementSettings, PlayerState, Vec3};
-use crate::types::IVec3;
+use super::{MovementSettings, PlayerState};
+use crate::types::{IVec3, Vec3};
 use crate::world::World;
 
 pub const BS: f32 = 10.0;
@@ -82,7 +82,7 @@ pub fn step_player_bs(
     input: InputState,
     dt: f32,
 ) {
-    if !valid_vec(state.pos) || !valid_vec(state.speed) || !dt.is_finite() || dt <= 0.0 {
+    if !state.pos.is_finite() || !state.speed.is_finite() || !dt.is_finite() || dt <= 0.0 {
         state.speed = Vec3::default();
         return;
     }
@@ -150,7 +150,6 @@ fn step_subframe(
     let x_move = move_axis(pos, vel.x * dt, Axis::X, world, collider);
     pos = x_move.pos;
     if let Some(hit) = x_move.hit {
-        blocked_by_node |= hit == Space::Colliding;
         if may_step && hit == Space::Colliding {
             if let Some(stepped) = try_step(
                 x_start,
@@ -163,9 +162,11 @@ fn step_subframe(
                 pos = stepped;
             } else {
                 vel.x = 0.0;
+                blocked_by_node = true;
             }
         } else {
             vel.x = 0.0;
+            blocked_by_node |= hit == Space::Colliding;
         }
     }
 
@@ -173,7 +174,6 @@ fn step_subframe(
     let z_move = move_axis(pos, vel.z * dt, Axis::Z, world, collider);
     pos = z_move.pos;
     if let Some(hit) = z_move.hit {
-        blocked_by_node |= hit == Space::Colliding;
         if may_step && hit == Space::Colliding {
             if let Some(stepped) = try_step(
                 z_start,
@@ -186,13 +186,21 @@ fn step_subframe(
                 pos = stepped;
             } else {
                 vel.z = 0.0;
+                blocked_by_node = true;
             }
         } else {
             vel.z = 0.0;
+            blocked_by_node |= hit == Space::Colliding;
         }
     }
 
-    if input.auto_jump && input.forward && grounded && blocked_by_node && vel.y <= 0.0 {
+    if input.auto_jump
+        && input.forward
+        && grounded
+        && blocked_by_node
+        && vel.y <= 0.0
+        && jumpable_obstacle_ahead(pos, yaw, world, collider)
+    {
         vel.y = params.jump_speed_bs;
     }
 
@@ -299,6 +307,28 @@ fn try_step(
     let mut stepped = horizontal.pos;
     stepped.y = top;
     (space_at(stepped, world, collider) == Space::Free).then_some(stepped)
+}
+
+fn jumpable_obstacle_ahead(
+    pos: Vec3,
+    yaw: f32,
+    world: &World,
+    collider: PlayerCollider,
+) -> bool {
+    let mut raised = pos;
+    raised.y += BS;
+    if space_at(raised, world, collider) != Space::Free {
+        return false;
+    }
+
+    let probe_distance = BS * 0.75;
+    let candidate = Vec3 {
+        x: raised.x - yaw.sin() * probe_distance,
+        y: raised.y,
+        z: raised.z + yaw.cos() * probe_distance,
+    };
+    space_at(candidate, world, collider) == Space::Free
+        && ground_top(candidate, BS + CONTACT_EPSILON_BS, world, collider).is_some()
 }
 
 pub fn snap_to_ground_height(pos: Vec3, world: &World, collider: PlayerCollider) -> Option<f32> {
@@ -488,10 +518,6 @@ fn approach(current: f32, target: f32, max_delta: f32) -> f32 {
     } else {
         (current - max_delta).max(target)
     }
-}
-
-fn valid_vec(value: Vec3) -> bool {
-    value.x.is_finite() && value.y.is_finite() && value.z.is_finite()
 }
 
 #[cfg(test)]
@@ -693,6 +719,42 @@ mod tests {
         }
         assert!(max_y > 15.0, "max_y={max_y}");
         assert!(state.pos.z > 15.0, "z={}", state.pos.z);
+    }
+
+    #[test]
+    fn auto_jump_does_not_loop_against_a_two_node_wall() {
+        let mut world = World::new();
+        for z in 0..=10 {
+            world.insert_test_node(IVec3 { x: 0, y: 0, z }, true);
+        }
+        world.insert_test_node(IVec3 { x: 0, y: 1, z: 1 }, true);
+        world.insert_test_node(IVec3 { x: 0, y: 2, z: 1 }, true);
+        let mut state = state_at(Vec3 {
+            x: 0.0,
+            y: 5.0,
+            z: 0.0,
+        });
+        let input = InputState {
+            forward: true,
+            jump: false,
+            auto_jump: true,
+            speed: 4.0,
+            yaw: 0.0,
+        };
+        let mut max_y = state.pos.y;
+        for _ in 0..120 {
+            step_player_bs(
+                &mut state,
+                &world,
+                PlayerCollider::default(),
+                PhysicsParams::default(),
+                input,
+                0.02,
+            );
+            max_y = max_y.max(state.pos.y);
+        }
+        assert!(max_y < 6.0, "max_y={max_y}");
+        assert!(state.pos.z < 5.0, "z={}", state.pos.z);
     }
 
     #[test]

@@ -114,6 +114,12 @@
               </div>
             </form>
           </div>
+          <form class="action-form" data-endpoint="/defend" data-method="POST">
+            <div class="inline">
+              <input name="radius" type="number" min="1" max="20" value="12" />
+              <button type="submit">POST /defend</button>
+            </div>
+          </form>
           <div class="split">
             <form class="action-form" data-endpoint="/interact" data-method="POST">
               <div class="inline">
@@ -192,6 +198,17 @@
               </div>
             </div>
           </form>
+          <form class="action-form" data-endpoint="/collect" data-method="POST">
+            <div class="field">
+              <label>Collect nearby blocks (exact observed node name)</label>
+              <div class="inline">
+                <input name="node" type="text" placeholder="mcl_core:tree" required />
+                <input name="count" type="number" min="1" max="8" value="1" />
+                <input name="radius" type="number" min="1" max="6" value="5" />
+                <button type="submit">POST /collect</button>
+              </div>
+            </div>
+          </form>
           <form class="action-form" data-endpoint="/place" data-method="POST">
             <div class="field">
               <label>Place (optional x, y, z)</label>
@@ -235,6 +252,6 @@
       </section>
     </main>
 
-    <script src="controller.js"></script>
+    <script type="module" src="controller.js"></script>
   </body>
 </html>

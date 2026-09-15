@@ -1,9 +1,15 @@
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
+use std::sync::OnceLock;
 
-use crate::nodedef::{Aabb, NodeBoxType, NodeDefManager};
+use crate::codec::hex_bytes;
+use self::nodedef::{Aabb, NodeBoxType, NodeDefManager};
 use crate::types::{BlockPos, IVec3};
+
+mod nodedef;
+
+pub(crate) use nodedef::parse_nodedef_zstd;
 
 const MAP_BLOCKSIZE: i32 = 16;
 const NODECOUNT: usize = 16 * 16 * 16;
@@ -74,10 +80,8 @@ impl World {
             return "ignore".to_string();
         }
         if let Some(manager) = self.nodedef.as_ref() {
-            for (name, id) in &manager.name_to_id {
-                if *id == node.content {
-                    return name.clone();
-                }
+            if let Some(name) = manager.name(node.content) {
+                return name.to_string();
             }
         }
         format!("content:{}", node.content)
@@ -105,12 +109,12 @@ impl World {
                 match collision.box_type {
                     NodeBoxType::Regular => {
                         return Some(vec![Aabb {
-                            min: crate::mtp::Vec3 {
+                            min: crate::types::Vec3 {
                                 x: -0.5,
                                 y: -0.5,
                                 z: -0.5,
                             },
-                            max: crate::mtp::Vec3 {
+                            max: crate::types::Vec3 {
                                 x: 0.5,
                                 y: 0.5,
                                 z: 0.5,
@@ -143,12 +147,12 @@ impl World {
             }
         }
         Some(vec![Aabb {
-            min: crate::mtp::Vec3 {
+            min: crate::types::Vec3 {
                 x: -0.5,
                 y: -0.5,
                 z: -0.5,
             },
-            max: crate::mtp::Vec3 {
+            max: crate::types::Vec3 {
                 x: 0.5,
                 y: 0.5,
                 z: 0.5,
@@ -183,7 +187,7 @@ impl World {
         if manager.features.len() <= TEST_CONTENT_ID as usize {
             manager.features.resize(
                 TEST_CONTENT_ID as usize + 1,
-                crate::nodedef::ContentFeatures::default(),
+                nodedef::ContentFeatures::default(),
             );
         }
         manager.features[TEST_CONTENT_ID as usize].walkable = walkable;
@@ -223,10 +227,12 @@ impl MapBlock {
             }
         };
 
-        println!(
-            "mapblock header layout={} hello_version={}",
-            header.layout, version
-        );
+        if mapblock_debug_enabled() {
+            println!(
+                "mapblock header layout={} hello_version={}",
+                header.layout, version
+            );
+        }
 
         let mut cursor = Cursor::new(decompressed.as_slice());
         cursor.set_position(header.offset as u64);
@@ -318,17 +324,6 @@ fn parse_header(data: &[u8]) -> Result<ParsedHeader> {
     bail!("no valid header layout found");
 }
 
-fn hex_bytes(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    for (idx, b) in bytes.iter().enumerate() {
-        if idx > 0 {
-            out.push(' ');
-        }
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
-}
-
 fn decode_zstd_frame(data: &[u8]) -> Result<Vec<u8>> {
     const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
@@ -378,21 +373,20 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 fn log_block_prefix(data: &[u8], magic_pos: usize) {
     let max = data.len().min(32);
-    let mut out = String::new();
-    for (idx, b) in data[..max].iter().enumerate() {
-        if idx > 0 {
-            out.push(' ');
-        }
-        out.push_str(&format!("{:02x}", b));
-    }
+    let out = hex_bytes(&data[..max]);
     if magic_pos == usize::MAX {
         println!("block zstd magic not found; first_bytes={}", out);
-    } else {
+    } else if mapblock_debug_enabled() {
         println!(
             "block zstd magic at {} bytes; first_bytes={}",
             magic_pos, out
         );
     }
+}
+
+fn mapblock_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("LUANTI_DEBUG_MAPBLOCK").as_deref() == Ok("1"))
 }
 
 fn div_floor(a: i32, b: i32) -> i32 {

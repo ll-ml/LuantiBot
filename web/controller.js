@@ -35,7 +35,7 @@ function buildJsonBody(form) {
     if (!field.name) continue;
     const value = field.value.trim();
     if (value === "") continue;
-    payload[field.name] = value;
+    payload[field.name] = field.type === "number" ? field.valueAsNumber : value;
   }
   return JSON.stringify(payload);
 }

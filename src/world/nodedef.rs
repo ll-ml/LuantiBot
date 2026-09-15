@@ -1,20 +1,12 @@
 use anyhow::{bail, Context, Result};
 
-use crate::codec::ByteReader;
-use crate::mtp::Vec3;
+use crate::codec::{hex_bytes, ByteReader};
+use crate::types::Vec3;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Aabb {
     pub min: Vec3,
     pub max: Vec3,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Color {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-    pub a: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,94 +52,16 @@ pub struct ConnectedNodeBox {
     pub disconnected_sides: Vec<Aabb>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ParamType2 {
-    None = 0,
-    Facedir = 2,
-    WallMounted = 3,
-    Leveled = 8,
-    FourDir = 9,
-    DegRotate = 10,
-    FlowingLiquid = 11,
-    ColoredFacedir = 12,
-    ColoredWallMounted = 13,
-    ColoredFourDir = 14,
-    ColoredDegRotate = 15,
-}
-
-impl Default for ParamType2 {
-    fn default() -> Self {
-        ParamType2::None
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NodeDrawType {
-    Normal = 0,
-    Airlike = 1,
-    Liquid = 2,
-    FlowingLiquid = 3,
-    Glasslike = 4,
-    Allfaces = 5,
-    AllfacesOptional = 6,
-    Torchlike = 7,
-    Signlike = 8,
-    Plantlike = 9,
-    Firelike = 10,
-    Fencelike = 11,
-    Raillike = 12,
-    Nodebox = 13,
-    Mesh = 14,
-    GlasslikeFramed = 15,
-    GlasslikeFramedOptional = 16,
-    AllfacesOptionalVertical = 17,
-    PlantlikeRooted = 18,
-}
-
-impl Default for NodeDrawType {
-    fn default() -> Self {
-        NodeDrawType::Normal
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LiquidType {
-    None = 0,
-    Source = 1,
-    Flowing = 2,
-}
-
-impl Default for LiquidType {
-    fn default() -> Self {
-        LiquidType::None
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct ContentFeatures {
     pub walkable: bool,
-    pub climbable: bool,
-    pub liquid_move_physics: bool,
-    pub move_resistance: u8,
-    pub node_box: NodeBox,
     pub collision_box: NodeBox,
-    pub selection_box: NodeBox,
-    pub param_type_2: ParamType2,
-    pub drawtype: NodeDrawType,
-    pub leveled: u8,
-    pub leveled_max: u8,
-    pub liquid_type: LiquidType,
-    pub liquid_alternative_flowing_id: u16,
-    pub liquid_alternative_source_id: u16,
-    pub connect_sides: u8,
-    pub connects_to_ids: Vec<u16>,
-    pub groups: Vec<(String, i16)>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct NodeDefManager {
     pub features: Vec<ContentFeatures>,
-    pub name_to_id: Vec<(String, u16)>,
+    names: Vec<String>,
 }
 
 impl NodeDefManager {
@@ -155,25 +69,11 @@ impl NodeDefManager {
         self.features.get(id as usize)
     }
 
-    pub fn resolve_crossrefs(&mut self) {
-        let mut map = std::collections::HashMap::new();
-        for (name, id) in &self.name_to_id {
-            map.insert(name.as_str(), *id);
-        }
-        for f in &mut self.features {
-            if f.liquid_type != LiquidType::None {
-                if f.liquid_alternative_flowing_id == 0 {
-                    if let Some(id) = map.get("air") {
-                        f.liquid_alternative_flowing_id = *id;
-                    }
-                }
-                if f.liquid_alternative_source_id == 0 {
-                    if let Some(id) = map.get("air") {
-                        f.liquid_alternative_source_id = *id;
-                    }
-                }
-            }
-        }
+    pub fn name(&self, id: u16) -> Option<&str> {
+        self.names
+            .get(id as usize)
+            .map(String::as_str)
+            .filter(|name| !name.is_empty())
     }
 }
 
@@ -199,9 +99,10 @@ pub fn parse_nodedef_zstd(data: &[u8], protocol_version: u16) -> Result<NodeDefM
             manager
                 .features
                 .resize(id as usize + 1, ContentFeatures::default());
+            manager.names.resize(id as usize + 1, String::new());
         }
         manager.features[id as usize] = features;
-        manager.name_to_id.push((name, id));
+        manager.names[id as usize] = name;
     }
 
     Ok(manager)
@@ -218,49 +119,14 @@ fn parse_content_features(
 
     let name = reader.read_string16()?;
     let groups_size = reader.read_u16()? as usize;
-    let mut groups = Vec::with_capacity(groups_size);
     for _ in 0..groups_size {
-        let name = reader.read_string16()?;
-        let val = reader.read_s16()?;
-        groups.push((name, val));
+        let _name = reader.read_string16()?;
+        let _value = reader.read_s16()?;
     }
 
     let _param_type = reader.read_u8()?;
-    let param_type_2 = match reader.read_u8()? {
-        2 => ParamType2::Facedir,
-        3 => ParamType2::WallMounted,
-        8 => ParamType2::Leveled,
-        9 => ParamType2::FourDir,
-        10 => ParamType2::DegRotate,
-        11 => ParamType2::FlowingLiquid,
-        12 => ParamType2::ColoredFacedir,
-        13 => ParamType2::ColoredWallMounted,
-        14 => ParamType2::ColoredFourDir,
-        15 => ParamType2::ColoredDegRotate,
-        _ => ParamType2::None,
-    };
-
-    let drawtype = match reader.read_u8()? {
-        1 => NodeDrawType::Airlike,
-        2 => NodeDrawType::Liquid,
-        3 => NodeDrawType::FlowingLiquid,
-        4 => NodeDrawType::Glasslike,
-        5 => NodeDrawType::Allfaces,
-        6 => NodeDrawType::AllfacesOptional,
-        7 => NodeDrawType::Torchlike,
-        8 => NodeDrawType::Signlike,
-        9 => NodeDrawType::Plantlike,
-        10 => NodeDrawType::Firelike,
-        11 => NodeDrawType::Fencelike,
-        12 => NodeDrawType::Raillike,
-        13 => NodeDrawType::Nodebox,
-        14 => NodeDrawType::Mesh,
-        15 => NodeDrawType::GlasslikeFramed,
-        16 => NodeDrawType::GlasslikeFramedOptional,
-        17 => NodeDrawType::AllfacesOptionalVertical,
-        18 => NodeDrawType::PlantlikeRooted,
-        _ => NodeDrawType::Normal,
-    };
+    let _param_type_2 = reader.read_u8()?;
+    let _drawtype = reader.read_u8()?;
 
     let _mesh = reader.read_string16()?;
     let _visual_scale = reader.read_f32()?;
@@ -292,14 +158,13 @@ fn parse_content_features(
     let _color_b = reader.read_u8()?;
     let _palette = reader.read_string16()?;
     let _waving = reader.read_u8()?;
-    let connect_sides = reader.read_u8()?;
+    let _connect_sides = reader.read_u8()?;
     let connects_to_size = reader.read_u16()? as usize;
-    let mut connects_to_ids = Vec::with_capacity(connects_to_size);
     for _ in 0..connects_to_size {
-        connects_to_ids.push(reader.read_u16()?);
+        let _connected_id = reader.read_u16()?;
     }
-    let _post_effect_color = read_argb8(reader)?;
-    let leveled = reader.read_u8()?;
+    skip_argb8(reader)?;
+    let _leveled = reader.read_u8()?;
 
     let _light_propagates = reader.read_u8()?;
     let _sunlight_propagates = reader.read_u8()?;
@@ -309,26 +174,22 @@ fn parse_content_features(
     let walkable = reader.read_u8()? != 0;
     let _pointable = reader.read_u8()?;
     let _diggable = reader.read_u8()? != 0;
-    let climbable = reader.read_u8()? != 0;
+    let _climbable = reader.read_u8()? != 0;
     let _buildable_to = reader.read_u8()? != 0;
     let _rightclickable = reader.read_u8()? != 0;
     let _damage_per_second = reader.read_u32()?;
 
-    let liquid_type = match reader.read_u8()? {
-        1 => LiquidType::Source,
-        2 => LiquidType::Flowing,
-        _ => LiquidType::None,
-    };
+    let _liquid_type = reader.read_u8()?;
     let _liquid_alternative_flowing = reader.read_string16()?;
     let _liquid_alternative_source = reader.read_string16()?;
-    let liquid_viscosity = reader.read_u8()?;
+    let _liquid_viscosity = reader.read_u8()?;
     let _liquid_renewable = reader.read_u8()?;
     let _liquid_range = reader.read_u8()?;
     let _drowning = reader.read_u8()?;
     let _floodable = reader.read_u8()?;
 
-    let node_box = read_nodebox(reader)?;
-    let selection_box = read_nodebox(reader)?;
+    let _node_box = read_nodebox(reader)?;
+    let _selection_box = read_nodebox(reader)?;
     let collision_box = read_nodebox(reader)?;
 
     skip_sound(reader)?;
@@ -339,72 +200,26 @@ fn parse_content_features(
     let _legacy_wallmounted = reader.read_u8()?;
 
     let _node_dig_prediction = reader.read_string16()?;
-    let leveled_max = if reader.remaining() > 0 {
-        reader.read_u8()?
-    } else {
-        0
-    };
+    if reader.remaining() > 0 {
+        let _leveled_max = reader.read_u8()?;
+    }
     if reader.remaining() > 0 {
         let _alpha = reader.read_u8()?;
-        let move_resistance = reader.read_u8()?;
-        let liquid_move_physics = reader.read_u8()? != 0;
+        let _move_resistance = reader.read_u8()?;
+        let _liquid_move_physics = reader.read_u8()? != 0;
         if reader.remaining() > 0 {
             let _post_effect_color_shaded = reader.read_u8()?;
         }
-        return Ok((
-            name,
-            ContentFeatures {
-                walkable,
-                climbable,
-                liquid_move_physics: liquid_type != LiquidType::None || liquid_move_physics,
-                move_resistance,
-                node_box,
-                collision_box,
-                selection_box,
-                param_type_2,
-                drawtype,
-                leveled,
-                leveled_max,
-                liquid_type,
-                liquid_alternative_flowing_id: 0,
-                liquid_alternative_source_id: 0,
-                connect_sides,
-                connects_to_ids,
-                groups,
-            },
-        ));
     }
 
-    Ok((
-        name,
-        ContentFeatures {
-            walkable,
-            climbable,
-            liquid_move_physics: liquid_type != LiquidType::None,
-            move_resistance: liquid_viscosity,
-            node_box,
-            collision_box,
-            selection_box,
-            param_type_2,
-            drawtype,
-            leveled,
-            leveled_max,
-            liquid_type,
-            liquid_alternative_flowing_id: 0,
-            liquid_alternative_source_id: 0,
-            connect_sides,
-            connects_to_ids,
-            groups,
-        },
-    ))
+    Ok((name, ContentFeatures { walkable, collision_box }))
 }
 
-fn read_argb8(reader: &mut ByteReader) -> Result<Color> {
-    let a = reader.read_u8()?;
-    let r = reader.read_u8()?;
-    let g = reader.read_u8()?;
-    let b = reader.read_u8()?;
-    Ok(Color { r, g, b, a })
+fn skip_argb8(reader: &mut ByteReader) -> Result<()> {
+    for _ in 0..4 {
+        let _component = reader.read_u8()?;
+    }
+    Ok(())
 }
 
 fn skip_tiledef(reader: &mut ByteReader, _protocol_version: u16) -> Result<()> {
@@ -510,8 +325,8 @@ fn read_nodebox(reader: &mut ByteReader) -> Result<NodeBox> {
 }
 
 fn read_aabb(reader: &mut ByteReader) -> Result<Aabb> {
-    let min = read_v3f32(reader)?;
-    let max = read_v3f32(reader)?;
+    let min = reader.read_vec3_f32()?;
+    let max = reader.read_vec3_f32()?;
     Ok(Aabb { min, max })
 }
 
@@ -522,23 +337,4 @@ fn read_aabb_vec(reader: &mut ByteReader) -> Result<Vec<Aabb>> {
         out.push(read_aabb(reader)?);
     }
     Ok(out)
-}
-
-fn read_v3f32(reader: &mut ByteReader) -> Result<Vec3> {
-    Ok(Vec3 {
-        x: reader.read_f32()?,
-        y: reader.read_f32()?,
-        z: reader.read_f32()?,
-    })
-}
-
-fn hex_bytes(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    for (idx, b) in bytes.iter().enumerate() {
-        if idx > 0 {
-            out.push(' ');
-        }
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
 }

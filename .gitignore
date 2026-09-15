@@ -26,3 +26,7 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Local credentials and persisted agent runtime state.
+/key_store/
+/bot-agent-state*.json

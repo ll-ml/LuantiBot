@@ -1,4 +1,18 @@
 use anyhow::{bail, Result};
+use std::fmt::Write;
+
+use crate::types::Vec3;
+
+pub fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len().saturating_mul(3));
+    for (index, byte) in bytes.iter().enumerate() {
+        if index > 0 {
+            output.push(' ');
+        }
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
 
 pub struct ByteReader<'a> {
     data: &'a [u8],
@@ -67,6 +81,14 @@ impl<'a> ByteReader<'a> {
         Ok(f32::from_be_bytes(raw.to_be_bytes()))
     }
 
+    pub fn read_vec3_f32(&mut self) -> Result<Vec3> {
+        Ok(Vec3 {
+            x: self.read_f32()?,
+            y: self.read_f32()?,
+            z: self.read_f32()?,
+        })
+    }
+
     pub fn read_string16(&mut self) -> Result<String> {
         let len = self.read_u16()? as usize;
         if self.offset + len > self.data.len() {
@@ -75,8 +97,7 @@ impl<'a> ByteReader<'a> {
         let s = String::from_utf8_lossy(&self.data[self.offset..self.offset + len]).to_string();
         self.offset += len;
         Ok(s)
-    }
-
+}
     pub fn read_bytes16(&mut self) -> Result<Vec<u8>> {
         let len = self.read_u16()? as usize;
         if self.offset + len > self.data.len() {
