@@ -78,8 +78,21 @@ booting -> observing -> planning -> acting -> waiting
 - registered basic outputs currently craftable from the observed inventory;
 - last action/result and failure count;
 - the last 60 player/bot conversation entries and last 40 executed game actions;
-- cumulative provider request, input-token, output-token, and total-token usage;
+- cumulative provider request, input-token, cached-input-token, output-token, and total-token usage;
 - recent state transitions, the chat cursor, and player messages waiting to be acknowledged.
+
+The state file remains full fidelity, but each model request uses a smaller decision view. It sends
+one copy of the mission, the last 12 non-pending conversation entries, the last eight external
+actions, and four recent objectives; persistence-only IDs/timestamps, empty/default observation
+fields, repeated pending messages, and long result tails are omitted. Tool schemas are also limited
+to actions that the current observation can actually support and automatically reappear when they
+become relevant. This changes neither the saved history nor server-side validation.
+
+Decision logs include the number of exposed tools, serialized context bytes, provider input/output
+tokens, and cached input tokens. Official OpenAI Responses requests use a stable prompt cache key
+for each model/instruction/tool profile; other compatible providers receive no OpenAI-specific
+cache field. Cached tokens are included in the provider's input-token total, so the separate value
+shows how much of that input received cache treatment.
 
 Players can assign or cancel goals in game:
 
@@ -102,7 +115,7 @@ The `say` tool is only exposed while new player chat is awaiting acknowledgement
 
 ## Available model tools
 
-Active mode exposes:
+Across observations, active mode can expose:
 
 - `move`, `move_to`, `navigate_node`, `follow`, `stop`, and `teleport`;
 - `attack`, `defend`, `approach`, `interact`, `fight`, and the constrained `hunt_food` action;

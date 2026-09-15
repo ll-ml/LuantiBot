@@ -13,7 +13,8 @@ use super::narration::action_narration;
 use super::planner::progression_recommendations;
 use super::policy::{
     idle_decision_due, is_external_game_tool, is_player_instruction_turn,
-    navigation_blocks_planning, needs_chat_action_followup, tool_is_available, tool_settle_delay,
+    navigation_blocks_planning, needs_chat_action_followup, tool_is_available, tool_is_relevant,
+    tool_settle_delay,
 };
 use super::prompt::agent_instructions;
 use super::state::{AgentPhase, AgentState, PendingChatMessage};
@@ -215,34 +216,34 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
         }
 
         state.transition(AgentPhase::Planning, "requesting the next tool action");
-        let mut unavailable_tool_names: Vec<&str> =
-            unavailable_tools.iter().map(String::as_str).collect();
-        unavailable_tool_names.sort_unstable();
+        let continuing_player_instruction = chat_action_followup_due;
+        let player_instruction_turn = is_player_instruction_turn(
+            !state.pending_chat.is_empty(),
+            continuing_player_instruction,
+        );
         let mut prompt_state = state.prompt_view();
-        if let Some(view) = prompt_state.as_object_mut() {
-            view.insert(
-                "progression_recommendations".to_string(),
-                serde_json::to_value(progression_recommendations(&state.observation))
-                    .unwrap_or_else(|_| json!([])),
-            );
-        }
-        let input = json!({
-            "state": prompt_state,
-            "constraints": {
-                "passive": cfg.passive,
-                "allow_self_directed_goals": false,
-                "allow_bounded_objectives": autonomous,
-                "one_external_action_per_turn": true,
-                "observation_is_authoritative": true,
-                "pending_chat_requires_acknowledgement": !state.pending_chat.is_empty(),
-                "chat_reply_tool_available": !state.pending_chat.is_empty(),
-                "continuing_player_instruction_after_reply": chat_action_followup_due,
-                "authorized_player_names": &cfg.allowed_senders,
-                "unavailable_tools": unavailable_tool_names,
-                "server_mod_schema_version": state.observation.server_mod_schema_version
+        let recommendations = progression_recommendations(&state.observation);
+        if !recommendations.is_empty() {
+            if let Some(view) = prompt_state.as_object_mut() {
+                view.insert(
+                    "progression_recommendations".to_string(),
+                    serde_json::to_value(recommendations).unwrap_or_else(|_| json!([])),
+                );
             }
-        })
-        .to_string();
+        }
+        let mut input_view = json!({"state": prompt_state});
+        if let Some(context) = input_view.as_object_mut() {
+            if !cfg.allowed_senders.is_empty() {
+                context.insert(
+                    "authorized_players".to_string(),
+                    json!(&cfg.allowed_senders),
+                );
+            }
+            if continuing_player_instruction {
+                context.insert("continue_after_reply".to_string(), json!(true));
+            }
+        }
+        let input = input_view.to_string();
 
         let decision_tools: Vec<serde_json::Value> = tools
             .iter()
@@ -256,7 +257,7 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
                     !state.pending_chat.is_empty(),
                     state.observation.server_mod_schema_version,
                     &unavailable_tools,
-                )
+                ) && tool_is_relevant(name, &state, player_instruction_turn)
             })
             .cloned()
             .collect();
@@ -282,12 +283,14 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
                 continue;
             }
         };
-        let continuing_player_instruction = chat_action_followup_due;
         state.record_usage(&decision.usage);
         println!(
-            "agent decision: tool_calls={} input_tokens={} output_tokens={} incomplete={}",
+            "agent decision: tool_calls={} tools={} context_bytes={} input_tokens={} cached_input_tokens={} output_tokens={} incomplete={}",
             decision.tool_calls.len(),
+            decision_tools.len(),
+            input.len(),
             decision.usage.input,
+            decision.usage.cached_input,
             decision.usage.output,
             decision.incomplete_reason.as_deref().unwrap_or("no")
         );
@@ -347,10 +350,6 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
         let mut external_action_taken = false;
         let mut external_action_succeeded = false;
         let mut plan_changed = false;
-        let player_instruction_turn = is_player_instruction_turn(
-            !state.pending_chat.is_empty(),
-            continuing_player_instruction,
-        );
         let mut action_settle_delay = idle_interval;
         let mut spoke_this_decision = false;
         for call in calls.into_iter().take(cfg.max_tool_calls.clamp(1, 8)) {

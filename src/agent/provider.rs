@@ -3,6 +3,7 @@ use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +54,8 @@ pub struct ProviderConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TokenUsage {
     pub input: u64,
+    #[serde(default)]
+    pub cached_input: u64,
     pub output: u64,
     pub total: u64,
 }
@@ -139,7 +142,15 @@ fn request_chat_completions(
             .context("retry chat completions with local-server compatibility fields")?;
     }
     if is_compatibility_error(status) {
-        return request_legacy_json(client, cfg, instructions, input, status, &response);
+        return request_legacy_json(
+            client,
+            cfg,
+            instructions,
+            input,
+            tools,
+            status,
+            &response,
+        );
     }
     ensure_success(status, &response)?;
     parse_chat_response(&response)
@@ -174,6 +185,13 @@ fn request_responses(
     if let Some(effort) = normalized_reasoning_effort(cfg.reasoning_effort.as_deref()) {
         body["reasoning"] = json!({"effort": effort});
     }
+    if is_official_openai_endpoint(&cfg.url) {
+        body["prompt_cache_key"] = json!(prompt_cache_key(
+            &cfg.model,
+            instructions,
+            &response_tools
+        ));
+    }
 
     let (mut status, mut response) = post_json(client, cfg, &body)?;
     if is_compatibility_error(status) {
@@ -195,12 +213,11 @@ fn request_legacy_json(
     cfg: &ProviderConfig,
     instructions: &str,
     input: &str,
+    tools: &[Value],
     previous_status: StatusCode,
     previous_response: &str,
 ) -> Result<ModelDecision> {
-    let legacy_instruction = format!(
-        "{instructions}\nThis server does not support native tools. Return exactly one JSON object with an action field and its arguments."
-    );
+    let legacy_instruction = legacy_instructions(instructions, tools);
     let body = json!({
         "model": cfg.model,
         "messages": [
@@ -239,6 +256,13 @@ fn request_legacy_json(
         }
     }
     Ok(decision)
+}
+
+fn legacy_instructions(instructions: &str, tools: &[Value]) -> String {
+    let catalog = serde_json::to_string(tools).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "{instructions}\nNative function calling is unavailable. Return exactly one JSON object with `action` set to an available tool name and its schema fields at the top level. Available tool schemas: {catalog}"
+    )
 }
 
 fn parse_chat_response(body: &str) -> Result<ModelDecision> {
@@ -387,6 +411,17 @@ fn parse_usage(value: &Value, responses: bool) -> TokenUsage {
         "completion_tokens"
     };
     let input = usage.get(input_key).and_then(Value::as_u64).unwrap_or(0);
+    let cached_input = if responses {
+        usage
+            .pointer("/input_tokens_details/cached_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    } else {
+        usage
+            .pointer("/prompt_tokens_details/cached_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
     let output = usage.get(output_key).and_then(Value::as_u64).unwrap_or(0);
     let total = usage
         .get("total_tokens")
@@ -394,9 +429,32 @@ fn parse_usage(value: &Value, responses: bool) -> TokenUsage {
         .unwrap_or(input.saturating_add(output));
     TokenUsage {
         input,
+        cached_input,
         output,
         total,
     }
+}
+
+fn is_official_openai_endpoint(url: &Url) -> bool {
+    url.host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
+}
+
+fn prompt_cache_key(model: &str, instructions: &str, tools: &[Value]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"luanti-agent-prompt-v1\0");
+    hash.update(model.as_bytes());
+    hash.update(b"\0");
+    hash.update(instructions.as_bytes());
+    hash.update(b"\0");
+    hash.update(serde_json::to_vec(tools).unwrap_or_default());
+    let suffix = hash
+        .finalize()
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("luanti-agent-{suffix}")
 }
 
 fn normalized_reasoning_effort(value: Option<&str>) -> Option<&str> {
@@ -489,18 +547,20 @@ mod tests {
         assert_eq!(decision.tool_calls[0].name, "move");
         assert_eq!(decision.tool_calls[0].arguments["steps"], 2);
         assert_eq!(decision.usage.total, 14);
+        assert_eq!(decision.usage.cached_input, 0);
     }
 
     #[test]
     fn parses_responses_tool_calls_and_usage() {
         let body = r#"{
             "output":[{"type":"function_call","call_id":"call_2","name":"sleep","arguments":"{\"radius\":6}"}],
-            "usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}
+            "usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":8},"output_tokens":3,"total_tokens":15}
         }"#;
         let decision = parse_responses_response(body).unwrap();
         assert_eq!(decision.tool_calls[0].name, "sleep");
         assert_eq!(decision.tool_calls[0].arguments["radius"], 6);
         assert_eq!(decision.usage.input, 12);
+        assert_eq!(decision.usage.cached_input, 8);
     }
 
     #[test]
@@ -529,5 +589,36 @@ mod tests {
     fn auto_detects_responses_endpoint() {
         let url = Url::parse("https://api.openai.com/v1/responses").unwrap();
         assert_eq!(LlmApi::Auto.resolve(&url), LlmApi::Responses);
+    }
+
+    #[test]
+    fn cache_key_is_stable_for_one_prompt_profile() {
+        let tools = vec![json!({"name":"move"})];
+        let first = prompt_cache_key("gpt-5-nano", "instructions", &tools);
+        assert_eq!(first, prompt_cache_key("gpt-5-nano", "instructions", &tools));
+        assert_ne!(first, prompt_cache_key("gpt-5-nano", "changed", &tools));
+        assert!(first.len() <= 64);
+    }
+
+    #[test]
+    fn only_official_openai_requests_get_cache_routing() {
+        assert!(is_official_openai_endpoint(
+            &Url::parse("https://api.openai.com/v1/responses").unwrap()
+        ));
+        assert!(!is_official_openai_endpoint(
+            &Url::parse("http://127.0.0.1:8080/v1/responses").unwrap()
+        ));
+    }
+
+    #[test]
+    fn legacy_fallback_keeps_the_filtered_tool_contract() {
+        let tools = vec![json!({
+            "name":"move",
+            "parameters":{"type":"object","properties":{"steps":{"type":"number"}}}
+        })];
+        let instructions = legacy_instructions("base", &tools);
+        assert!(instructions.contains("Available tool schemas"));
+        assert!(instructions.contains("\"name\":\"move\""));
+        assert!(instructions.contains("\"steps\""));
     }
 }

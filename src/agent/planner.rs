@@ -11,6 +11,7 @@ const LOW_VALUE_GROUPS: &[&str] = &["soil", "sand", "leaves", "flora", "plant"];
 #[derive(Clone, Debug, Serialize)]
 pub struct ProgressionRecommendation {
     pub id: &'static str,
+    #[serde(skip_serializing)]
     pub priority: u8,
     pub action: &'static str,
     pub reason: String,

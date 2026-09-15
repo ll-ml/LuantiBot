@@ -10,6 +10,10 @@ use super::util::clip_chars;
 
 const ACTION_HISTORY_LIMIT: usize = 40;
 const REPEATED_FAILURE_LIMIT: usize = 2;
+const PROMPT_CONVERSATION_LIMIT: usize = 12;
+const PROMPT_ACTION_LIMIT: usize = 8;
+const PROMPT_OBJECTIVE_LIMIT: usize = 4;
+const PROMPT_RESULT_CHAR_LIMIT: usize = 240;
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -414,6 +418,8 @@ pub struct StateEvent {
 pub struct CumulativeUsage {
     pub requests: u64,
     pub input_tokens: u64,
+    #[serde(default)]
+    pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
 }
@@ -697,6 +703,10 @@ impl AgentState {
     pub fn record_usage(&mut self, usage: &TokenUsage) {
         self.usage.requests = self.usage.requests.saturating_add(1);
         self.usage.input_tokens = self.usage.input_tokens.saturating_add(usage.input);
+        self.usage.cached_input_tokens = self
+            .usage
+            .cached_input_tokens
+            .saturating_add(usage.cached_input);
         self.usage.output_tokens = self.usage.output_tokens.saturating_add(usage.output);
         self.usage.total_tokens = self.usage.total_tokens.saturating_add(usage.total);
     }
@@ -809,22 +819,120 @@ impl AgentState {
     }
 
     pub fn prompt_view(&self) -> Value {
-        serde_json::json!({
-            "tick": self.tick,
-            "phase": self.phase,
-            "phase_reason": self.phase_reason,
-            "goal": self.current_goal,
-            "mission": self.current_goal,
-            "objective": self.current_objective,
-            "recent_objectives": tail(&self.objective_history, 8),
-            "observation": self.observation,
-            "last_action": self.last_action,
-            "last_result": self.last_result,
-            "consecutive_failures": self.consecutive_failures,
-            "pending_chat": self.pending_chat,
-            "conversation_history": tail(&self.conversation_history, 24),
-            "action_history": tail(&self.action_history, 12),
-        })
+        let pending_ids: HashSet<u64> = self
+            .pending_chat
+            .iter()
+            .map(|message| message.id)
+            .collect();
+        let conversation = self
+            .conversation_history
+            .iter()
+            .filter(|entry| {
+                entry
+                    .source_id
+                    .is_none_or(|source_id| !pending_ids.contains(&source_id))
+            })
+            .rev()
+            .take(PROMPT_CONVERSATION_LIMIT)
+            .map(|entry| {
+                serde_json::json!({
+                    "role": entry.role,
+                    "sender": entry.sender,
+                    "message": entry.message,
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        let actions = self
+            .action_history
+            .iter()
+            .filter(|record| !is_bookkeeping_action(&record.action))
+            .rev()
+            .take(PROMPT_ACTION_LIMIT)
+            .map(|record| {
+                serde_json::json!({
+                    "action": record.action,
+                    "ok": record.ok,
+                    "result": clip_chars(&record.result, PROMPT_RESULT_CHAR_LIMIT),
+                    "at": record.position,
+                    "arguments": record.arguments,
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        let recent_objectives = self
+            .objective_history
+            .iter()
+            .rev()
+            .take(PROMPT_OBJECTIVE_LIMIT)
+            .map(|objective| {
+                serde_json::json!({
+                    "description": objective.description,
+                    "status": objective.status,
+                    "outcome": objective.outcome,
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        let mission = self.current_goal.as_ref().map(|goal| {
+            serde_json::json!({
+                "description": goal.description,
+                "success_criteria": goal.success_criteria,
+                "origin": goal.origin,
+            })
+        });
+        let objective = self.current_objective.as_ref().map(|objective| {
+            serde_json::json!({
+                "description": objective.description,
+                "success_criteria": objective.success_criteria,
+                "actions_used": objective.actions_used,
+                "action_budget": objective.action_budget,
+            })
+        });
+        let pending_chat = self
+            .pending_chat
+            .iter()
+            .map(|message| {
+                serde_json::json!({
+                    "from": message.from,
+                    "message": message.message,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut observation = serde_json::to_value(&self.observation)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        if self.observation.voxel_map.palette.is_empty()
+            && self.observation.voxel_map.runs.is_empty()
+        {
+            if let Some(object) = observation.as_object_mut() {
+                object.remove("voxel_map");
+            }
+        }
+        if controller_is_idle(&self.observation.controller) {
+            if let Some(object) = observation.as_object_mut() {
+                object.remove("controller");
+            }
+        }
+
+        let mut view = serde_json::json!({
+            "mission": mission,
+            "objective": objective,
+            "recent_objectives": recent_objectives,
+            "observation": observation,
+            "consecutive_failures": (self.consecutive_failures > 0)
+                .then_some(self.consecutive_failures),
+            "pending_chat": pending_chat,
+            "conversation_history": conversation,
+            "recent_actions": actions,
+        });
+        prune_prompt_defaults(&mut view, None);
+        view
     }
 
     fn push_goal_history(&mut self, goal: GoalState) {
@@ -863,6 +971,43 @@ impl AgentState {
         while self.conversation_history.len() > 60 {
             self.conversation_history.pop_front();
         }
+    }
+}
+
+fn controller_is_idle(controller: &ControllerView) -> bool {
+    let navigation = &controller.navigation;
+    !controller.follow_enabled
+        && controller.follow_target.is_none()
+        && !controller.move_active
+        && controller.move_target.is_none()
+        && matches!(navigation.status.trim(), "" | "idle")
+        && navigation.current_waypoint.is_none()
+        && navigation.waypoints_remaining == 0
+        && !navigation.recovering
+        && navigation.recovery_attempts == 0
+        && navigation.stalled_for_seconds == 0.0
+        && navigation.last_error.is_none()
+        && navigation.arrival_action.is_none()
+}
+
+/// Remove wire-only defaults from the model view. Persistent state remains
+/// lossless; the prompt contract tells the model how to interpret omissions.
+fn prune_prompt_defaults(value: &mut Value, key: Option<&str>) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(false) => key == Some("complete"),
+        Value::String(text) => !text.is_empty(),
+        Value::Array(items) => {
+            items.retain_mut(|item| prune_prompt_defaults(item, None));
+            !items.is_empty()
+        }
+        Value::Object(object) => {
+            object.retain(|child_key, child| {
+                prune_prompt_defaults(child, Some(child_key.as_str()))
+            });
+            !object.is_empty()
+        }
+        Value::Bool(true) | Value::Number(_) => true,
     }
 }
 
@@ -944,13 +1089,6 @@ fn canonical_json(value: &Value) -> String {
             )
         }
     }
-}
-
-fn tail<T>(values: &VecDeque<T>, limit: usize) -> Vec<&T> {
-    values
-        .iter()
-        .skip(values.len().saturating_sub(limit))
-        .collect()
 }
 
 pub fn parse_observation(raw: &str) -> Result<ObservationSnapshot> {
@@ -1774,6 +1912,25 @@ mod tests {
     }
 
     #[test]
+    fn older_usage_state_defaults_cached_tokens() {
+        let mut value = serde_json::to_value(AgentState::default()).unwrap();
+        value["usage"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cached_input_tokens");
+        let mut state: AgentState = serde_json::from_value(value).unwrap();
+        assert_eq!(state.usage.cached_input_tokens, 0);
+
+        state.record_usage(&TokenUsage {
+            input: 10,
+            cached_input: 6,
+            output: 2,
+            total: 12,
+        });
+        assert_eq!(state.usage.cached_input_tokens, 6);
+    }
+
+    #[test]
     fn pending_chat_is_deduplicated_and_cleared_after_acknowledgement() {
         let mut state = AgentState::default();
         let message = PendingChatMessage {
@@ -1783,13 +1940,14 @@ mod tests {
         };
         state.enqueue_chat([message.clone(), message]);
         assert_eq!(state.pending_chat.len(), 1);
-        assert_eq!(state.prompt_view()["pending_chat"][0]["from"], "Sam");
+        let pending_view = state.prompt_view();
+        assert_eq!(pending_view["pending_chat"][0]["from"], "Sam");
+        assert!(pending_view.get("conversation_history").is_none());
         assert_eq!(state.conversation_history.len(), 1);
         state.clear_pending_chat();
         assert!(state.pending_chat.is_empty());
         assert_eq!(state.conversation_history[0].message, "follow me");
     }
-
 
     #[test]
     fn conversation_and_action_history_are_available_to_the_model() {
@@ -1798,7 +1956,67 @@ mod tests {
         state.record_action_result("follow", true, "OK");
         let view = state.prompt_view();
         assert_eq!(view["conversation_history"][0]["sender"], "Bot");
-        assert_eq!(view["action_history"][0]["action"], "follow");
+        assert_eq!(view["recent_actions"][0]["action"], "follow");
+        assert!(view.get("action_history").is_none());
+        assert!(view["recent_actions"][0].get("tick").is_none());
+        assert!(view["recent_actions"][0].get("fingerprint").is_none());
+    }
+
+    #[test]
+    fn prompt_view_omits_persisted_metadata_and_default_fields() {
+        let mut state = AgentState::default();
+        state.set_configured_goal("Gather wood", None).unwrap();
+        state.observation.players.push(RelativeEntity {
+            kind: "player".to_string(),
+            name: Some("Sam".to_string()),
+            dx: 1,
+            ..RelativeEntity::default()
+        });
+
+        let full_observation_bytes = serde_json::to_vec(&state.observation).unwrap().len();
+        let view = state.prompt_view();
+        let compact_observation_bytes =
+            serde_json::to_vec(&view["observation"]).unwrap().len();
+        assert!(view.get("goal").is_none());
+        assert_eq!(view["mission"]["description"], "Gather wood");
+        assert!(view["mission"].get("created_tick").is_none());
+        assert!(view["observation"].get("inventory").is_none());
+        assert!(view["observation"]["players"][0]
+            .get("safe_to_hunt")
+            .is_none());
+        assert!(view.get("pending_chat").is_none());
+        assert!(compact_observation_bytes * 2 < full_observation_bytes);
+    }
+
+    #[test]
+    fn prompt_histories_are_bounded_without_truncating_persisted_state() {
+        let mut state = AgentState::default();
+        for index in 0..20 {
+            state.enqueue_chat([PendingChatMessage {
+                id: index,
+                from: "Sam".to_string(),
+                message: format!("message {index}"),
+            }]);
+            state.clear_pending_chat();
+            state.record_tool_result(
+                "move",
+                &serde_json::json!({"direction":"forward","steps":index}),
+                true,
+                &"long result ".repeat(40),
+            );
+        }
+
+        let view = state.prompt_view();
+        assert_eq!(state.conversation_history.len(), 20);
+        assert_eq!(state.action_history.len(), 20);
+        assert_eq!(view["conversation_history"].as_array().unwrap().len(), 12);
+        assert_eq!(view["recent_actions"].as_array().unwrap().len(), 8);
+        assert!(view["recent_actions"][0]["result"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count()
+            <= PROMPT_RESULT_CHAR_LIMIT);
     }
 
     #[test]

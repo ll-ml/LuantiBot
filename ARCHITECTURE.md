@@ -5,9 +5,10 @@ source is organized around runtime boundaries rather than placing every workflow
 
 - `src/app/` parses CLI arguments, runs short diagnostic commands, and owns shared connection and
   authentication setup.
-- `src/agent/` owns the LLM decision loop, provider protocol, prompt, persistent state, policy,
-  narration, and tool adapters. `agent/mod.rs` is the single facade; the former parallel
-  `src/agent.rs` no longer exists.
+- `src/agent/` owns the LLM decision loop, provider protocol, compact model-facing state projection,
+  prompt, persistent state, policy, narration, and tool adapters. The persisted state stays
+  lossless while request-time policy removes irrelevant tool schemas and redundant context.
+  `agent/mod.rs` is the single facade; the former parallel `src/agent.rs` no longer exists.
 - `src/api/` is the local HTTP boundary used by the web controller and LLM agent. Request parsing,
   responses, asynchronous replies, routing, and listener startup are separated.
 - `src/bot/` owns the live in-game controller. API command dispatch, chat history, observations,

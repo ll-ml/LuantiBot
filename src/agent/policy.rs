@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use super::state::AgentState;
+
 pub(super) fn is_external_game_tool(name: &str) -> bool {
     !matches!(
         name.trim(),
@@ -45,6 +47,64 @@ pub(super) fn tool_is_available(
         && !unavailable_tools.contains(name)
 }
 
+/// Keep impossible, observation-dependent schemas out of this decision. They
+/// become available automatically when the next observation supports them.
+pub(super) fn tool_is_relevant(
+    name: &str,
+    state: &AgentState,
+    player_instruction_turn: bool,
+) -> bool {
+    let observation = &state.observation;
+    let has_inventory = observation.inventory.wield.is_some()
+        || !observation.inventory.main.is_empty();
+    let has_entities = !observation.players.is_empty()
+        || !observation.hostiles.is_empty()
+        || !observation.mobs.is_empty();
+
+    match name {
+        "set_goal" => player_instruction_turn,
+        "finish_goal" => state.current_goal.is_some(),
+        "set_objective" => state.current_objective.is_none(),
+        "finish_objective" => state.current_objective.is_some(),
+        "attack" | "teleport" => !observation.players.is_empty(),
+        "defend" => !observation.hostiles.is_empty(),
+        "fight" => !observation.players.is_empty() || !observation.hostiles.is_empty(),
+        "approach" | "interact" => has_entities,
+        "hunt_food" => observation.mobs.iter().any(|mob| {
+            mob.food_source
+                && mob.safe_to_hunt
+                && mob.adult
+                && !mob.named
+                && !mob.tamed
+                && !mob.owned
+                && !mob.food_drops.is_empty()
+        }),
+        "navigate_node" | "collect_blocks" | "gather_resource" => {
+            !observation.nearby_nodes.is_empty()
+        }
+        "collect_item" => !observation.nearby_items.is_empty(),
+        "deposit_item" => {
+            has_inventory && observation.chests.iter().any(|chest| chest.accessible)
+        }
+        "withdraw_item" => observation
+            .chests
+            .iter()
+            .any(|chest| chest.accessible && !chest.contents.is_empty()),
+        "load_furnace" => observation.furnaces.iter().any(|furnace| {
+            furnace.accessible
+                && !furnace.input_options.is_empty()
+                && !furnace.fuel_options.is_empty()
+        }),
+        "collect_furnace_output" => observation
+            .furnaces
+            .iter()
+            .any(|furnace| furnace.accessible && furnace.output.is_some()),
+        "craft_item" => !observation.crafting.craftable.is_empty(),
+        "drop_item" | "wield" | "use_item" => has_inventory,
+        _ => true,
+    }
+}
+
 pub(super) fn tool_settle_delay(name: &str, ok: bool) -> Duration {
     if !ok {
         return Duration::from_secs(1);
@@ -78,7 +138,9 @@ pub(super) fn navigation_blocks_planning(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::state::AgentState;
+    use super::super::state::{
+        ChestItemView, ChestView, FoodDropView, RelativeEntity,
+    };
 
     #[test]
     fn tool_availability_matches_chat_and_server_capabilities() {
@@ -105,6 +167,37 @@ mod tests {
         assert!(tool_is_available("load_furnace", false, 8, &unavailable));
         assert!(tool_is_available("collect_furnace_output", false, 8, &unavailable));
         assert!(tool_is_available("craft_item", false, 8, &unavailable));
+    }
+
+    #[test]
+    fn observation_dependent_tools_are_exposed_only_when_actionable() {
+        let mut state = AgentState::default();
+        assert!(!tool_is_relevant("defend", &state, false));
+        assert!(!tool_is_relevant("collect_item", &state, false));
+        assert!(!tool_is_relevant("withdraw_item", &state, false));
+        assert!(!tool_is_relevant("set_goal", &state, false));
+        assert!(tool_is_relevant("follow", &state, false));
+        assert!(tool_is_relevant("set_goal", &state, true));
+
+        state.observation.hostiles.push(RelativeEntity::default());
+        state.observation.mobs.push(RelativeEntity {
+            food_source: true,
+            safe_to_hunt: true,
+            adult: true,
+            food_drops: vec![FoodDropView::default()],
+            ..RelativeEntity::default()
+        });
+        state.observation.chests.push(ChestView {
+            accessible: true,
+            contents: vec![ChestItemView {
+                name: "mcl_core:stone".to_string(),
+                count: 1,
+            }],
+            ..ChestView::default()
+        });
+        assert!(tool_is_relevant("defend", &state, false));
+        assert!(tool_is_relevant("hunt_food", &state, false));
+        assert!(tool_is_relevant("withdraw_item", &state, false));
     }
 
     #[test]

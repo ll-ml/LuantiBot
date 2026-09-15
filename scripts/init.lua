@@ -591,16 +591,15 @@ local function plan_node_path(player, selector, radius, require_unprotected)
 end
 
 local function parse_pos_params(param)
+    local words = split_words(param)
     local nums = {}
-    for value in string.gmatch(param or "", "[^%s]+") do
+    for index = 1, math.min(#words, 3) do
+        local value = words[index]
         local n = tonumber(value)
         if not n then
             return nil
         end
         nums[#nums + 1] = n
-        if #nums >= 3 then
-            break
-        end
     end
     if #nums >= 3 then
         return { x = nums[1], y = nums[2], z = nums[3] }
@@ -652,10 +651,6 @@ local function wield_inventory_slot(player, inv, slot, stack)
         return false, "could not update source inventory slot"
     end
     return true
-end
-
-local function node_position_array(pos)
-    return { pos.x, pos.y, pos.z }
 end
 
 local function adjacent_node_toward(target, observer)
@@ -997,7 +992,7 @@ local function same_node_position(a, b)
         and a.z == b.z
 end
 
-local function chest_is_visible(player, positions)
+local function positions_are_visible(player, positions)
     local player_pos = player:get_pos()
     if not player_pos then
         return false
@@ -1114,7 +1109,7 @@ local function resolve_chest(player, requested_pos)
     if distance > CHEST_INTERACTION_RANGE then
         accessible = false
         access_status = "out_of_range"
-    elseif not chest_is_visible(player, positions) then
+    elseif not positions_are_visible(player, positions) then
         accessible = false
         access_status = "blocked_path"
     else
@@ -1198,11 +1193,9 @@ local BASIC_CRAFT_ITEMS = {
 }
 
 local function basic_craft_item_allowed(item_name)
-    if BASIC_CRAFT_ITEMS[item_name] then
-        return minetest.registered_items[item_name] ~= nil
-    end
     return minetest.registered_items[item_name] ~= nil
-        and minetest.get_item_group(item_name, "wood") > 0
+        and (BASIC_CRAFT_ITEMS[item_name]
+            or minetest.get_item_group(item_name, "wood") > 0)
 end
 
 local basic_craft_outputs_cache = nil
@@ -1264,7 +1257,7 @@ local function nearby_crafting_table(player)
     end)
     for _, candidate in ipairs(candidates) do
         if not minetest.is_protected(candidate.pos, player:get_player_name())
-                and chest_is_visible(player, { candidate.pos }) then
+                and positions_are_visible(player, { candidate.pos }) then
             return candidate
         end
     end
@@ -1568,7 +1561,7 @@ local function plan_craft_recipe(player, item_name, recipe, batches, table_info)
         grid_width = recipe_shape.grid_width,
         grid_size = recipe_shape.grid_width * recipe_shape.grid_width,
         table_required = recipe_shape.table_required,
-        table_pos = table_info and node_position_array(table_info.pos) or nil,
+        table_pos = table_info and position_array(table_info.pos) or nil,
         moves = allocation.moves,
         ingredients = allocation.ingredients,
     }
@@ -1684,7 +1677,7 @@ local function activate_craft_grid(player, plan)
     if minetest.is_protected(table_pos, player:get_player_name()) then
         return false, "crafting_table_protected"
     end
-    if not chest_is_visible(player, { table_pos }) then
+    if not positions_are_visible(player, { table_pos }) then
         return false, "crafting_table_blocked"
     end
     if type(mcl_crafting_table) ~= "table"
@@ -1761,7 +1754,7 @@ local function chest_observation(chest)
     local result = {
         name = chest.node,
         kind = chest.kind,
-        pos = node_position_array(chest.pos),
+        pos = position_array(chest.pos),
         distance = math.floor(chest.distance * 10 + 0.5) / 10,
         accessible = chest.accessible,
         status = chest.access_status,
@@ -1775,7 +1768,7 @@ local function chest_observation(chest)
     return result
 end
 
-local function parse_chest_position(args, offset)
+local function parse_integer_position(args, offset)
     local pos = {
         x = tonumber(args[offset]),
         y = tonumber(args[offset + 1]),
@@ -1830,14 +1823,14 @@ local function prepare_chest_transfer(player, operation, requested_pos, item_nam
                     if capacity > 0 then
                         return {
                             operation = operation,
-                            requested_target = node_position_array(requested_pos),
-                            target = node_position_array(chest.pos),
+                            requested_target = position_array(requested_pos),
+                            target = position_array(chest.pos),
                             node = chest.node,
                             item = item_name,
                             chest_count = chest_count,
                             action_count = math.min(wanted, capacity),
                             player_slot = player_slot - 1,
-                            container_pos = node_position_array(descriptor.pos),
+                            container_pos = position_array(descriptor.pos),
                         }
                     end
                 end
@@ -1859,14 +1852,14 @@ local function prepare_chest_transfer(player, operation, requested_pos, item_nam
                 if capacity > 0 then
                     return {
                         operation = operation,
-                        requested_target = node_position_array(requested_pos),
-                        target = node_position_array(chest.pos),
+                        requested_target = position_array(requested_pos),
+                        target = position_array(chest.pos),
                         node = chest.node,
                         item = item_name,
                         chest_count = chest_count,
                         action_count = math.min(wanted, capacity),
                         chest_slot = chest_slot - 1,
-                        container_pos = node_position_array(descriptor.pos),
+                        container_pos = position_array(descriptor.pos),
                     }
                 end
             end
@@ -1885,7 +1878,7 @@ local function inventory_receipt_time()
     return tonumber(minetest.get_gametime()) or 0
 end
 
-local function valid_chest_nonce(nonce)
+local function valid_action_nonce(nonce)
     return type(nonce) == "string"
         and #nonce >= 1
         and #nonce <= 64
@@ -1916,10 +1909,6 @@ local function active_adapter_receipt(name, adapter)
         return nil, "action_pending"
     end
     return receipt
-end
-
-local function active_chest_receipt(name)
-    return active_adapter_receipt(name, "chest")
 end
 
 local function expect_inventory_action(name, adapter, nonce, prepared)
@@ -1953,8 +1942,78 @@ local function expect_inventory_action(name, adapter, nonce, prepared)
     return receipt
 end
 
-local function expect_chest_action(name, nonce, prepared)
-    return expect_inventory_action(name, "chest", nonce, prepared)
+local function parse_action_nonce(param)
+    local args = split_words(param)
+    local nonce = #args == 1 and args[1] or nil
+    if not valid_action_nonce(nonce) then
+        return nil
+    end
+    return nonce
+end
+
+local function inventory_transfer_receipt_details(receipt)
+    local details = {
+        nonce = receipt.nonce,
+        operation = receipt.operation,
+        item = receipt.item,
+        requested_target = receipt.requested_target,
+        target = receipt.target,
+        container_pos = receipt.container_pos,
+        container_list = receipt.container_list,
+        container_slot = receipt.container_slot,
+        action_count = receipt.action_count,
+        moved = receipt.moved,
+    }
+    if receipt.adapter == "furnace" then
+        details.node = receipt.node
+        details.kind = receipt.kind
+    end
+    return details
+end
+
+local function report_inventory_transfer_receipt(name, param, adapter, tag)
+    local nonce = parse_action_nonce(param)
+    if not nonce then
+        return command_result(name, tag, false, "invalid_parameters", "expected nonce")
+    end
+
+    local receipt, status = active_adapter_receipt(name, adapter)
+    if not receipt then
+        return command_result(name, tag, false, status, status, { nonce = nonce })
+    end
+    if receipt.nonce ~= nonce then
+        return command_result(
+            name, tag, false, "nonce_mismatch", "nonce mismatch", { nonce = nonce }
+        )
+    end
+
+    local details = inventory_transfer_receipt_details(receipt)
+    if not receipt.completed then
+        return command_result(name, tag, false, "pending", "pending", details)
+    end
+
+    inventory_action_receipts[name] = nil
+    return command_result(name, tag, true, "completed", "completed", details)
+end
+
+local function cancel_inventory_transfer(name, param, adapter, tag)
+    local nonce = parse_action_nonce(param)
+    if not nonce then
+        return command_result(name, tag, false, "invalid_parameters", "expected nonce")
+    end
+
+    local receipt, status = active_adapter_receipt(name, adapter)
+    if not receipt then
+        return command_result(name, tag, false, status, status, { nonce = nonce })
+    end
+    if receipt.nonce ~= nonce then
+        return command_result(
+            name, tag, false, "nonce_mismatch", "nonce mismatch", { nonce = nonce }
+        )
+    end
+
+    inventory_action_receipts[name] = nil
+    return command_result(name, tag, true, "canceled", "canceled", { nonce = nonce })
 end
 
 local function inventory_main_item_count(inv, item_name)
@@ -2167,7 +2226,7 @@ local function resolve_furnace(player, requested_pos)
     if distance > FURNACE_INTERACTION_RANGE then
         accessible = false
         access_status = "out_of_range"
-    elseif not chest_is_visible(player, { target }) then
+    elseif not positions_are_visible(player, { target }) then
         accessible = false
         access_status = "blocked_path"
     elseif minetest.is_protected(target, player:get_player_name()) then
@@ -2321,7 +2380,7 @@ local function furnace_observation(player, furnace)
     local result = {
         name = furnace.node,
         kind = furnace.kind,
-        pos = node_position_array(furnace.pos),
+        pos = position_array(furnace.pos),
         distance = math.floor(furnace.distance * 10 + 0.5) / 10,
         accessible = furnace.accessible,
         status = furnace.access_status,
@@ -2386,9 +2445,9 @@ end
 local function prepared_furnace_action(furnace, operation, requested_pos, item_name, count)
     return {
         operation = operation,
-        requested_target = node_position_array(requested_pos),
-        target = node_position_array(furnace.pos),
-        container_pos = node_position_array(furnace.pos),
+        requested_target = position_array(requested_pos),
+        target = position_array(furnace.pos),
+        container_pos = position_array(furnace.pos),
         container_list = operation == "input" and "src"
             or operation == "fuel" and "fuel" or "dst",
         container_slot = 0,
@@ -2492,6 +2551,52 @@ local function prepare_furnace_transfer(player, operation, requested_pos, item_n
         return nil, rejection or (operation == "fuel" and "invalid_fuel" or "not_cookable")
     end
     return nil, operation == "fuel" and "fuel_full" or "input_full"
+end
+
+local function prepare_inventory_transfer_command(name, param, adapter, tag, prepare_transfer)
+    local player = get_player(name)
+    if not player then
+        return command_result(name, tag, false, "no_player", "player not found")
+    end
+
+    local args = split_words(param)
+    local nonce = args[1]
+    local target = #args == 7 and parse_integer_position(args, 3) or nil
+    local count = tonumber(args[7])
+    if not valid_action_nonce(nonce) or not target then
+        return command_result(
+            name, tag, false, "invalid_parameters",
+            "expected nonce operation x y z item count"
+        )
+    end
+
+    local prepared, status = prepare_transfer(player, args[2], target, args[6], count)
+    if not prepared then
+        return command_result(
+            name, tag, false, status, status,
+            {
+                nonce = nonce,
+                operation = args[2],
+                requested_target = position_array(target),
+                item = args[6],
+            }
+        )
+    end
+
+    prepared.nonce = nonce
+    local _, receipt_status = expect_inventory_action(name, adapter, nonce, prepared)
+    if receipt_status then
+        return command_result(
+            name, tag, false, receipt_status, receipt_status,
+            {
+                nonce = nonce,
+                operation = prepared.operation,
+                requested_target = prepared.requested_target,
+                item = prepared.item,
+            }
+        )
+    end
+    return command_result(name, tag, true, "prepared", "prepared", prepared)
 end
 
 local function build_observe(player, radius)
@@ -3650,7 +3755,7 @@ minetest.register_chatcommand("bot_prepare_mine", {
             target = vector.round(target)
         end
 
-        local target_array = node_position_array(target)
+        local target_array = position_array(target)
         if vector.distance(pos, target) > 6 then
             return command_result(
                 name,
@@ -3772,7 +3877,7 @@ minetest.register_chatcommand("bot_prepare_mine", {
             "native dig prepared",
             {
                 target = target_array,
-                above = node_position_array(above),
+                above = position_array(above),
                 wield_index = math.floor(wield_index) - 1,
                 dig_time = candidate.dig_time,
                 node = node.name,
@@ -3784,10 +3889,7 @@ minetest.register_chatcommand("bot_prepare_mine", {
 })
 
 local function parse_mine_verification(param)
-    local args = {}
-    for value in string.gmatch(param or "", "[^%s]+") do
-        args[#args + 1] = value
-    end
+    local args = split_words(param)
     if #args ~= 4 then
         return nil
     end
@@ -3837,7 +3939,7 @@ minetest.register_chatcommand("bot_verify_mine", {
             status,
             status,
             {
-                target = node_position_array(target),
+                target = position_array(target),
                 expected_node = expected_node,
                 current_node = current_node,
             }
@@ -3857,7 +3959,7 @@ minetest.register_chatcommand("bot_chest_inspect", {
             )
         end
         local args = split_words(param)
-        local target = #args == 3 and parse_chest_position(args, 1) or nil
+        local target = #args == 3 and parse_integer_position(args, 1) or nil
         if not target then
             return command_result(
                 name, "BOT_CHEST_INSPECT", false, "invalid_parameters", "expected integer x y z"
@@ -3868,7 +3970,7 @@ minetest.register_chatcommand("bot_chest_inspect", {
             return command_result(name, "BOT_CHEST_INSPECT", false, status, status)
         end
         local observation = chest_observation(chest)
-        observation.requested_target = node_position_array(target)
+        observation.requested_target = position_array(target)
         if not chest.accessible then
             return command_result(
                 name, "BOT_CHEST_INSPECT", false, chest.access_status, chest.access_status,
@@ -3886,51 +3988,8 @@ minetest.register_chatcommand("bot_chest_prepare", {
     description = "Prepare one callback-safe native chest inventory move",
     privs = { interact = true },
     func = function(name, param)
-        local player = get_player(name)
-        if not player then
-            return command_result(
-                name, "BOT_CHEST_PREPARE", false, "no_player", "player not found"
-            )
-        end
-        local args = split_words(param)
-        local nonce = args[1]
-        local target = #args == 7 and parse_chest_position(args, 3) or nil
-        local count = tonumber(args[7])
-        if not valid_chest_nonce(nonce) or not target then
-            return command_result(
-                name, "BOT_CHEST_PREPARE", false, "invalid_parameters",
-                "expected nonce operation x y z item count"
-            )
-        end
-        local prepared, status = prepare_chest_transfer(
-            player, args[2], target, args[6], count
-        )
-        if not prepared then
-            return command_result(
-                name, "BOT_CHEST_PREPARE", false, status, status,
-                {
-                    nonce = nonce,
-                    operation = args[2],
-                    requested_target = node_position_array(target),
-                    item = args[6],
-                }
-            )
-        end
-        prepared.nonce = nonce
-        local _, receipt_status = expect_chest_action(name, nonce, prepared)
-        if receipt_status then
-            return command_result(
-                name, "BOT_CHEST_PREPARE", false, receipt_status, receipt_status,
-                {
-                    nonce = nonce,
-                    operation = prepared.operation,
-                    requested_target = prepared.requested_target,
-                    item = prepared.item,
-                }
-            )
-        end
-        return command_result(
-            name, "BOT_CHEST_PREPARE", true, "prepared", "prepared", prepared
+        return prepare_inventory_transfer_command(
+            name, param, "chest", "BOT_CHEST_PREPARE", prepare_chest_transfer
         )
     end,
 })
@@ -3940,48 +3999,8 @@ minetest.register_chatcommand("bot_chest_receipt", {
     description = "Read the exact result of one prepared native chest inventory move",
     privs = { interact = true },
     func = function(name, param)
-        local args = split_words(param)
-        local nonce = #args == 1 and args[1] or nil
-        if not valid_chest_nonce(nonce) then
-            return command_result(
-                name, "BOT_CHEST_RECEIPT", false, "invalid_parameters", "expected nonce"
-            )
-        end
-
-        local receipt, status = active_chest_receipt(name)
-        if not receipt then
-            return command_result(
-                name, "BOT_CHEST_RECEIPT", false, status, status, { nonce = nonce }
-            )
-        end
-        if receipt.nonce ~= nonce then
-            return command_result(
-                name, "BOT_CHEST_RECEIPT", false, "nonce_mismatch", "nonce mismatch",
-                { nonce = nonce }
-            )
-        end
-
-        local details = {
-            nonce = receipt.nonce,
-            operation = receipt.operation,
-            item = receipt.item,
-            requested_target = receipt.requested_target,
-            target = receipt.target,
-            container_pos = receipt.container_pos,
-            container_list = receipt.container_list,
-            container_slot = receipt.container_slot,
-            action_count = receipt.action_count,
-            moved = receipt.moved,
-        }
-        if not receipt.completed then
-            return command_result(
-                name, "BOT_CHEST_RECEIPT", false, "pending", "pending", details
-            )
-        end
-
-        inventory_action_receipts[name] = nil
-        return command_result(
-            name, "BOT_CHEST_RECEIPT", true, "completed", "completed", details
+        return report_inventory_transfer_receipt(
+            name, param, "chest", "BOT_CHEST_RECEIPT"
         )
     end,
 })
@@ -3991,31 +4010,7 @@ minetest.register_chatcommand("bot_chest_cancel", {
     description = "Cancel one prepared native chest inventory move",
     privs = { interact = true },
     func = function(name, param)
-        local args = split_words(param)
-        local nonce = #args == 1 and args[1] or nil
-        if not valid_chest_nonce(nonce) then
-            return command_result(
-                name, "BOT_CHEST_CANCEL", false, "invalid_parameters", "expected nonce"
-            )
-        end
-
-        local receipt, status = active_chest_receipt(name)
-        if not receipt then
-            return command_result(
-                name, "BOT_CHEST_CANCEL", false, status, status, { nonce = nonce }
-            )
-        end
-        if receipt.nonce ~= nonce then
-            return command_result(
-                name, "BOT_CHEST_CANCEL", false, "nonce_mismatch", "nonce mismatch",
-                { nonce = nonce }
-            )
-        end
-
-        inventory_action_receipts[name] = nil
-        return command_result(
-            name, "BOT_CHEST_CANCEL", true, "canceled", "canceled", { nonce = nonce }
-        )
+        return cancel_inventory_transfer(name, param, "chest", "BOT_CHEST_CANCEL")
     end,
 })
 
@@ -4034,7 +4029,7 @@ minetest.register_chatcommand("bot_craft_prepare", {
         local nonce = args[1]
         local item_name = args[2]
         local requested = tonumber(args[3])
-        if #args ~= 3 or not valid_chest_nonce(nonce)
+        if #args ~= 3 or not valid_action_nonce(nonce)
                 or type(item_name) ~= "string" or item_name == ""
                 or not requested or requested ~= math.floor(requested)
                 or requested < 1 or requested > CRAFT_MAX_OUTPUT_COUNT then
@@ -4128,9 +4123,8 @@ minetest.register_chatcommand("bot_craft_receipt", {
     description = "Read and verify one native crafting operation",
     privs = { interact = true },
     func = function(name, param)
-        local args = split_words(param)
-        local nonce = #args == 1 and args[1] or nil
-        if not valid_chest_nonce(nonce) then
+        local nonce = parse_action_nonce(param)
+        if not nonce then
             return command_result(
                 name, "BOT_CRAFT_RECEIPT", false, "invalid_parameters", "expected nonce"
             )
@@ -4203,9 +4197,8 @@ minetest.register_chatcommand("bot_craft_cancel", {
     description = "Cancel one prepared native crafting operation without deleting items",
     privs = { interact = true },
     func = function(name, param)
-        local args = split_words(param)
-        local nonce = #args == 1 and args[1] or nil
-        if not valid_chest_nonce(nonce) then
+        local nonce = parse_action_nonce(param)
+        if not nonce then
             return command_result(
                 name, "BOT_CRAFT_CANCEL", false, "invalid_parameters", "expected nonce"
             )
@@ -4250,7 +4243,7 @@ minetest.register_chatcommand("bot_furnace_inspect", {
             )
         end
         local args = split_words(param)
-        local target = #args == 3 and parse_chest_position(args, 1) or nil
+        local target = #args == 3 and parse_integer_position(args, 1) or nil
         if not target then
             return command_result(
                 name, "BOT_FURNACE_INSPECT", false, "invalid_parameters",
@@ -4262,7 +4255,7 @@ minetest.register_chatcommand("bot_furnace_inspect", {
             return command_result(name, "BOT_FURNACE_INSPECT", false, status, status)
         end
         local observation = furnace_observation(player, furnace)
-        observation.requested_target = node_position_array(target)
+        observation.requested_target = position_array(target)
         if not furnace.accessible then
             return command_result(
                 name, "BOT_FURNACE_INSPECT", false,
@@ -4280,110 +4273,19 @@ minetest.register_chatcommand("bot_furnace_prepare", {
     description = "Prepare one callback-safe native furnace inventory move",
     privs = { interact = true },
     func = function(name, param)
-        local player = get_player(name)
-        if not player then
-            return command_result(
-                name, "BOT_FURNACE_PREPARE", false, "no_player", "player not found"
-            )
-        end
-        local args = split_words(param)
-        local nonce = args[1]
-        local target = #args == 7 and parse_chest_position(args, 3) or nil
-        local count = tonumber(args[7])
-        if not valid_chest_nonce(nonce) or not target then
-            return command_result(
-                name, "BOT_FURNACE_PREPARE", false, "invalid_parameters",
-                "expected nonce operation x y z item count"
-            )
-        end
-
-        local prepared, status = prepare_furnace_transfer(
-            player, args[2], target, args[6], count
-        )
-        if not prepared then
-            return command_result(
-                name, "BOT_FURNACE_PREPARE", false, status, status,
-                {
-                    nonce = nonce,
-                    operation = args[2],
-                    requested_target = node_position_array(target),
-                    item = args[6],
-                }
-            )
-        end
-        prepared.nonce = nonce
-        local _, receipt_status = expect_inventory_action(
-            name, "furnace", nonce, prepared
-        )
-        if receipt_status then
-            return command_result(
-                name, "BOT_FURNACE_PREPARE", false, receipt_status, receipt_status,
-                {
-                    nonce = nonce,
-                    operation = prepared.operation,
-                    requested_target = prepared.requested_target,
-                    item = prepared.item,
-                }
-            )
-        end
-        return command_result(
-            name, "BOT_FURNACE_PREPARE", true, "prepared", "prepared", prepared
+        return prepare_inventory_transfer_command(
+            name, param, "furnace", "BOT_FURNACE_PREPARE", prepare_furnace_transfer
         )
     end,
 })
-
-local function furnace_receipt_details(receipt)
-    return {
-        nonce = receipt.nonce,
-        operation = receipt.operation,
-        item = receipt.item,
-        requested_target = receipt.requested_target,
-        target = receipt.target,
-        container_pos = receipt.container_pos,
-        container_list = receipt.container_list,
-        container_slot = receipt.container_slot,
-        node = receipt.node,
-        kind = receipt.kind,
-        action_count = receipt.action_count,
-        moved = receipt.moved,
-    }
-end
 
 minetest.register_chatcommand("bot_furnace_receipt", {
     params = "<nonce>",
     description = "Read the exact result of one prepared native furnace inventory move",
     privs = { interact = true },
     func = function(name, param)
-        local args = split_words(param)
-        local nonce = #args == 1 and args[1] or nil
-        if not valid_chest_nonce(nonce) then
-            return command_result(
-                name, "BOT_FURNACE_RECEIPT", false, "invalid_parameters", "expected nonce"
-            )
-        end
-
-        local receipt, status = active_adapter_receipt(name, "furnace")
-        if not receipt then
-            return command_result(
-                name, "BOT_FURNACE_RECEIPT", false, status, status, { nonce = nonce }
-            )
-        end
-        if receipt.nonce ~= nonce then
-            return command_result(
-                name, "BOT_FURNACE_RECEIPT", false, "nonce_mismatch", "nonce mismatch",
-                { nonce = nonce }
-            )
-        end
-
-        local details = furnace_receipt_details(receipt)
-        if not receipt.completed then
-            return command_result(
-                name, "BOT_FURNACE_RECEIPT", false, "pending", "pending", details
-            )
-        end
-        inventory_action_receipts[name] = nil
-        return command_result(
-            name, "BOT_FURNACE_RECEIPT", true, "completed", "completed", details
+        return report_inventory_transfer_receipt(
+            name, param, "furnace", "BOT_FURNACE_RECEIPT"
         )
     end,
 })
@@ -4393,34 +4295,12 @@ minetest.register_chatcommand("bot_furnace_cancel", {
     description = "Cancel one prepared native furnace inventory move",
     privs = { interact = true },
     func = function(name, param)
-        local args = split_words(param)
-        local nonce = #args == 1 and args[1] or nil
-        if not valid_chest_nonce(nonce) then
-            return command_result(
-                name, "BOT_FURNACE_CANCEL", false, "invalid_parameters", "expected nonce"
-            )
-        end
-
-        local receipt, status = active_adapter_receipt(name, "furnace")
-        if not receipt then
-            return command_result(
-                name, "BOT_FURNACE_CANCEL", false, status, status, { nonce = nonce }
-            )
-        end
-        if receipt.nonce ~= nonce then
-            return command_result(
-                name, "BOT_FURNACE_CANCEL", false, "nonce_mismatch", "nonce mismatch",
-                { nonce = nonce }
-            )
-        end
-
-        inventory_action_receipts[name] = nil
-        return command_result(
-            name, "BOT_FURNACE_CANCEL", true, "canceled", "canceled", { nonce = nonce }
-        )
+        return cancel_inventory_transfer(name, param, "furnace", "BOT_FURNACE_CANCEL")
     end,
 })
 
+-- Retained for manual and older external clients. The current Rust client uses
+-- chest inspection plus the prepare/receipt protocol instead.
 minetest.register_chatcommand("bot_chest_verify", {
     params = "<x y z> <item_name>",
     description = "Read the current count of an item in a nearby supported chest",
@@ -4433,7 +4313,7 @@ minetest.register_chatcommand("bot_chest_verify", {
             )
         end
         local args = split_words(param)
-        local target = #args == 4 and parse_chest_position(args, 1) or nil
+        local target = #args == 4 and parse_integer_position(args, 1) or nil
         local item_name = args[4]
         if not target or not item_name or not minetest.registered_items[item_name] then
             return command_result(
@@ -4449,8 +4329,8 @@ minetest.register_chatcommand("bot_chest_verify", {
             return command_result(
                 name, "BOT_CHEST_VERIFY", false, chest.access_status, chest.access_status,
                 {
-                    requested_target = node_position_array(target),
-                    target = node_position_array(chest.pos),
+                    requested_target = position_array(target),
+                    target = position_array(chest.pos),
                     item = item_name,
                 }
             )
@@ -4458,8 +4338,8 @@ minetest.register_chatcommand("bot_chest_verify", {
         return command_result(
             name, "BOT_CHEST_VERIFY", true, "verified", "verified",
             {
-                requested_target = node_position_array(target),
-                target = node_position_array(chest.pos),
+                requested_target = position_array(target),
+                target = position_array(chest.pos),
                 item = item_name,
                 chest_count = inventory_item_count(chest.inventories, item_name),
             }
@@ -4467,6 +4347,8 @@ minetest.register_chatcommand("bot_chest_verify", {
     end,
 })
 
+-- Retained for manual and older external clients. Current API mining uses the
+-- native player dig protocol via bot_prepare_mine and bot_verify_mine.
 minetest.register_chatcommand("bot_mine", {
     params = "[x y z]",
     description = "Dig a block with the wielded tool",
@@ -4502,6 +4384,8 @@ minetest.register_chatcommand("bot_mine", {
     end,
 })
 
+-- Retained for manual and older external clients. Current collection also uses
+-- the native player dig protocol so tool timing and inventory updates are real.
 minetest.register_chatcommand("bot_collect", {
     params = "<node_name> [count] [radius]",
     description = "Mine several nearby blocks of one exact node type",
@@ -4512,7 +4396,7 @@ minetest.register_chatcommand("bot_collect", {
             send_bot_json(name, "BOT_COLLECT", { ok = false, status = "no_player" })
             return false, "player not found"
         end
-        local args = (param or ""):split(" ")
+        local args = split_words(param)
         local node_name = args[1] or ""
         if node_name == "" or not minetest.registered_nodes[node_name] then
             send_bot_json(name, "BOT_COLLECT", {
@@ -4683,7 +4567,7 @@ minetest.register_chatcommand("bot_drop", {
             send_bot_json(name, "BOT_DROP", { ok = false, status = "no_player" })
             return false, "player not found"
         end
-        local args = (param or ""):split(" ")
+        local args = split_words(param)
         local item_name = args[1] or ""
         local count = tonumber(args[2]) or 1
         if count < 1 then
