@@ -18,6 +18,7 @@ use super::policy::{
 };
 use super::prompt::agent_instructions;
 use super::state::{AgentPhase, AgentState, PendingChatMessage};
+use super::telemetry::{DecisionTelemetry, TelemetryPublisher};
 use super::tools::{execute_tool, post_chat_status, tool_definitions};
 use super::util::clip_chars;
 
@@ -76,6 +77,15 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
     }
 
     let autonomous = cfg.autonomous && !cfg.passive;
+    let mut decision_telemetry = DecisionTelemetry::idle(state.tick);
+    let mut telemetry = TelemetryPublisher::new(
+        &api_base,
+        &cfg.api_token,
+        &cfg.model,
+        &cfg.bot_name,
+        cfg.passive,
+        autonomous,
+    );
     let tools = tool_definitions(cfg.passive, autonomous);
     let mut unavailable_tools = HashSet::<String>::new();
     let instructions = agent_instructions(cfg.passive, autonomous);
@@ -104,11 +114,17 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "disabled".to_string())
     );
+    telemetry.publish(&state, &decision_telemetry);
 
     loop {
         let started = Instant::now();
         state.tick = state.tick.saturating_add(1);
         state.transition(AgentPhase::Observing, "polling bot state");
+        telemetry.publish_if_due(
+            &state,
+            &decision_telemetry,
+            Duration::from_secs(5),
+        );
 
         let (chats, chat_cursor) = match fetch_chat(
             &client,
@@ -183,6 +199,7 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
                 let message = format!("observation failed: {error:#}");
                 state.record_action_result("observe", false, &message);
                 eprintln!("{message}");
+                telemetry.publish(&state, &decision_telemetry);
                 save_state(&state, cfg.state_file.as_deref());
                 sleep_remaining(started, tick_interval);
                 continue;
@@ -210,6 +227,7 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
                 ));
         if !should_decide {
             state.transition(AgentPhase::Idle, "waiting for a goal or new chat");
+            telemetry.publish(&state, &decision_telemetry);
             save_state(&state, cfg.state_file.as_deref());
             sleep_remaining(started, tick_interval);
             continue;
@@ -262,6 +280,13 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
             .cloned()
             .collect();
 
+        decision_telemetry = DecisionTelemetry::requesting(
+            state.tick,
+            input.len(),
+            decision_tools.len(),
+        );
+        telemetry.publish(&state, &decision_telemetry);
+        let decision_started = Instant::now();
         let decision = match request_decision(
             &client,
             &provider,
@@ -273,7 +298,15 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
             Err(error) => {
                 let message = format!("LLM request failed: {error:#}");
                 state.record_action_result("plan", false, &message);
+                decision_telemetry = DecisionTelemetry::failed(
+                    state.tick,
+                    input.len(),
+                    decision_tools.len(),
+                    decision_started.elapsed(),
+                    &message,
+                );
                 eprintln!("{message}");
+                telemetry.publish(&state, &decision_telemetry);
                 save_state(&state, cfg.state_file.as_deref());
                 next_idle_decision = Instant::now() + idle_interval;
                 next_goal_decision = Instant::now() + idle_interval;
@@ -283,6 +316,8 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
                 continue;
             }
         };
+        let decision_latency = decision_started.elapsed();
+        let returned_tool_calls = decision.tool_calls.len();
         state.record_usage(&decision.usage);
         println!(
             "agent decision: tool_calls={} tools={} context_bytes={} input_tokens={} cached_input_tokens={} output_tokens={} incomplete={}",
@@ -346,16 +381,35 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
             }
         }
         calls.sort_by_key(|call| is_external_game_tool(&call.name));
+        let calls: Vec<ToolCall> = calls
+            .into_iter()
+            .take(cfg.max_tool_calls.clamp(1, 8))
+            .collect();
+        decision_telemetry = DecisionTelemetry::ready(
+            state.tick,
+            input.len(),
+            decision_tools.len(),
+            returned_tool_calls,
+            &calls,
+            decision_latency,
+            &decision.usage,
+            decision.incomplete_reason.as_deref(),
+        );
+        telemetry.publish(&state, &decision_telemetry);
 
         let mut external_action_taken = false;
         let mut external_action_succeeded = false;
         let mut plan_changed = false;
         let mut action_settle_delay = idle_interval;
         let mut spoke_this_decision = false;
-        for call in calls.into_iter().take(cfg.max_tool_calls.clamp(1, 8)) {
+        let selected_call_count = calls.len();
+        for (call_index, call) in calls.into_iter().enumerate() {
             if external_action_taken {
                 break;
             }
+            decision_telemetry.start_tool(&call, call_index + 1, selected_call_count);
+            telemetry.publish(&state, &decision_telemetry);
+            let tool_started = Instant::now();
             let execution = execute_tool(
                 &client,
                 &api_base,
@@ -376,6 +430,13 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
                 execution.ok,
                 &execution.result,
             );
+            decision_telemetry.finish_tool(
+                &execution.name,
+                execution.ok,
+                &execution.result,
+                tool_started.elapsed(),
+            );
+            telemetry.publish(&state, &decision_telemetry);
             if !execution.ok && execution.result.contains("unsupported_command") {
                 eprintln!(
                     "agent disabled unsupported tool '{}' until restart",
@@ -433,6 +494,7 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
             }
             external_action_taken |= execution.external_action;
         }
+        decision_telemetry.finish();
 
         chat_action_followup_due = needs_chat_action_followup(
             player_instruction_turn,
@@ -474,6 +536,7 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
             } else {
                 idle_interval
             };
+        telemetry.publish(&state, &decision_telemetry);
         save_state(&state, cfg.state_file.as_deref());
         sleep_remaining(started, tick_interval);
     }

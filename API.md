@@ -448,6 +448,56 @@ Possible status values:
 - `no_space`
 - `out_of_range`
 
+## Agent Telemetry
+
+### `GET /agent/telemetry`
+
+Returns the latest status published by the separate `agent` process. The envelope includes an
+`online` flag, heartbeat `age_ms`, a monotonic `revision`, and the last agent snapshot. An API that
+has not heard from an agent returns `agent:null`; a snapshot becomes stale after eight seconds
+without a heartbeat but remains available for inspection.
+
+```json
+{
+  "online": true,
+  "age_ms": 412,
+  "revision": 27,
+  "agent": {
+    "schema_version": 1,
+    "bot_name": "Bot",
+    "model": "gpt-5-nano",
+    "tick": 84,
+    "phase": "acting",
+    "phase_reason": "move: OK",
+    "mission": {"description":"gather wood"},
+    "objective": null,
+    "usage": {"requests":12,"input_tokens":21000,"cached_input_tokens":8000,"output_tokens":950,"total_tokens":21950},
+    "decision": {
+      "status": "executing",
+      "request_latency_ms": 740,
+      "offered_tools": 9,
+      "selected_tools": [{"name":"move","arguments":{"direction":"forward","steps":2}}]
+    },
+    "recent_tools": [
+      {"tick":83,"name":"move","arguments":{"direction":"forward"},"ok":true,"result":"OK","position":[1,64,2]}
+    ]
+  }
+}
+```
+
+Telemetry reports phases, goals, selected calls, arguments, results, timings, controller/world
+summary, and existing token accounting. It intentionally does not expose provider credentials,
+prompts, or hidden model reasoning.
+
+### `POST /agent/telemetry`
+
+Used internally by the built-in agent to publish a schema-version-1 snapshot. Reposting the same
+snapshot refreshes its heartbeat without incrementing `revision`. This endpoint uses the same
+Bearer token as every other bot API endpoint.
+
+Publishing runs on a bounded background path and the Web UI polls only this local endpoint, so the
+telemetry is never inserted into an LLM request and consumes no additional model tokens.
+
 ## Health / Where
 
 ### `GET /health`

@@ -1,3 +1,5 @@
+import { startAgentTelemetry } from "./telemetry.js";
+
 const baseUrlInput = document.getElementById("baseUrl");
 const authTokenInput = document.getElementById("authToken");
 const outputEl = document.getElementById("output");
@@ -142,4 +144,5 @@ pingBtn.addEventListener("click", () => {
   sendRequest("/health", "GET", "");
 });
 
+startAgentTelemetry({ baseUrlInput, authTokenInput });
 sendRequest("/health", "GET", "");

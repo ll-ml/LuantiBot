@@ -7,6 +7,7 @@ mod prompt;
 mod provider;
 mod runtime;
 mod state;
+mod telemetry;
 mod tools;
 mod util;
 

@@ -94,6 +94,22 @@ for each model/instruction/tool profile; other compatible providers receive no O
 cache field. Cached tokens are included in the provider's input-token total, so the separate value
 shows how much of that input received cache treatment.
 
+## Live Web UI telemetry
+
+While the agent runs, it automatically publishes a compact status snapshot to the bot API. Open
+the controller with `cd web && yarn dev` and its **LLM Agent Activity** panel will show the current
+phase and reason, mission/objective, model latency and token usage, selected tool names and
+arguments, execution results and timings, recent tool history, and a small world/controller
+summary. The panel pauses polling in a hidden browser tab and avoids rebuilding unchanged data.
+
+This telemetry is generated from state and provider accounting the agent already has. It is sent
+to `/agent/telemetry` by a best-effort background worker and is never added to the prompt, so it
+uses zero additional LLM tokens. Network I/O cannot block the decision/action loop; the only
+in-loop work is constructing a small bounded JSON snapshot. If the API is unavailable, the
+publisher drops or replaces pending telemetry while normal agent operation continues. The
+snapshot excludes the provider API key, full prompt, voxel map, inventory contents, and hidden
+model reasoning.
+
 Players can assign or cancel goals in game:
 
 ```text

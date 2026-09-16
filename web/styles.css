@@ -9,6 +9,12 @@
   --muted: #6c655b;
   --accent: #2c7fb5;
   --accent-soft: rgba(44, 127, 181, 0.14);
+  --success: #2a6b3f;
+  --success-soft: rgba(74, 155, 94, 0.14);
+  --danger: #a94228;
+  --danger-soft: rgba(203, 91, 43, 0.14);
+  --warning: #8a651c;
+  --warning-soft: rgba(196, 145, 42, 0.16);
   --border: #e4dfd6;
   --shadow: 0 20px 50px rgba(29, 24, 16, 0.12);
   --radius: 20px;
@@ -40,6 +46,15 @@ h1 {
 
 h2 {
   font-size: 1.2rem;
+}
+
+h3 {
+  margin: 0 0 7px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
 }
 
 p {
@@ -149,6 +164,11 @@ button.ghost {
   box-shadow: none;
 }
 
+button.compact {
+  padding: 7px 11px;
+  font-size: 0.78rem;
+}
+
 .inline {
   display: flex;
   align-items: center;
@@ -171,10 +191,212 @@ button.ghost {
   gap: 10px;
 }
 
+.monitor-header,
+.section-heading,
+.tool-entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.monitor-header h2 {
+  margin-bottom: 0;
+}
+
+.monitor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.telemetry-status,
+.tool-outcome {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.telemetry-status.is-online,
+.tool-entry.is-success .tool-outcome {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.telemetry-status.is-stale {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.telemetry-status.is-error,
+.tool-entry.is-error .tool-outcome {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.telemetry-status.is-offline {
+  color: var(--muted);
+  background: rgba(108, 101, 91, 0.12);
+}
+
+.telemetry-updated,
+.telemetry-detail,
+.empty-state {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.telemetry-updated {
+  margin-top: 7px;
+}
+
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.telemetry-metric {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-elevated);
+}
+
+.telemetry-metric span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 0.67rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.telemetry-metric strong {
+  display: block;
+  overflow: hidden;
+  font-family: "JetBrains Mono", "Courier New", monospace;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-block {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.activity-copy,
+.decision-summary {
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.decision-summary > * + * {
+  margin-top: 7px;
+}
+
+.decision-active {
+  color: var(--accent);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.telemetry-detail.is-success {
+  color: var(--success);
+}
+
+.telemetry-detail.is-error {
+  color: var(--danger);
+}
+
+.decision-tools,
+.tool-entry details {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.decision-tools summary,
+.tool-entry summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.decision-call {
+  margin-top: 8px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.decision-call pre,
+.tool-entry pre {
+  margin: 7px 0 0;
+  padding: 9px;
+  overflow: auto;
+  border-radius: 8px;
+  background: rgba(22, 28, 34, 0.08);
+  color: var(--text);
+  font-family: "JetBrains Mono", "Courier New", monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.tool-list {
+  display: grid;
+  gap: 9px;
+  max-height: 500px;
+  overflow: auto;
+}
+
+.tool-entry {
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-elevated);
+}
+
+.tool-entry.is-success {
+  border-left-color: var(--success);
+}
+
+.tool-entry.is-error {
+  border-left-color: var(--danger);
+}
+
+.tool-result {
+  margin: 6px 0;
+  font-family: "JetBrains Mono", "Courier New", monospace;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.empty-state {
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  text-align: center;
+}
+
 .output {
-  height: 100%;
-  position: sticky;
-  top: 20px;
+  min-height: 460px;
 }
 
 .output-header {
@@ -240,6 +462,12 @@ button.ghost {
     --muted: #98a3af;
     --accent: #5bb0e6;
     --accent-soft: rgba(91, 176, 230, 0.2);
+    --success: #82d59a;
+    --success-soft: rgba(80, 177, 111, 0.18);
+    --danger: #ff9b7f;
+    --danger-soft: rgba(215, 91, 56, 0.2);
+    --warning: #e7c16d;
+    --warning-soft: rgba(196, 145, 42, 0.2);
     --border: #2e3944;
     --shadow: 0 24px 60px rgba(7, 10, 13, 0.6);
   }
@@ -270,6 +498,11 @@ button.ghost {
   button.ghost {
     background: rgba(24, 31, 38, 0.75);
     border-color: rgba(126, 136, 148, 0.45);
+  }
+
+  .decision-call pre,
+  .tool-entry pre {
+    background: rgba(8, 12, 16, 0.45);
   }
 
   .output-body {
@@ -313,7 +546,20 @@ button.ghost {
     padding: 24px 20px 10px;
   }
 
-  .output {
-    position: static;
+  .telemetry-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .monitor-header,
+  .section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .plan-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
   }
 }

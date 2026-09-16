@@ -11,7 +11,9 @@
       <div>
         <p class="eyebrow">Human Control Panel</p>
         <h1>Luanti Bot Controller</h1>
-        <p class="subtitle">Send direct REST actions and inspect responses.</p>
+        <p class="subtitle">
+          Control the bot and inspect live LLM decisions without adding model context.
+        </p>
       </div>
       <div class="status-pill" id="connectionStatus">Disconnected</div>
     </header>
@@ -242,6 +244,77 @@
       </section>
 
       <section class="panel">
+        <div class="card agent-monitor">
+          <div class="monitor-header">
+            <div>
+              <p class="eyebrow">Local telemetry</p>
+              <h2>LLM Agent Activity</h2>
+            </div>
+            <div class="monitor-actions">
+              <span id="agentStatus" class="telemetry-status is-offline">Not started</span>
+              <button type="button" class="ghost compact" id="refreshAgentBtn">Refresh</button>
+            </div>
+          </div>
+          <p id="agentUpdated" class="telemetry-updated">Waiting for agent telemetry...</p>
+
+          <div class="telemetry-grid" aria-label="Agent summary">
+            <div class="telemetry-metric">
+              <span>Phase</span>
+              <strong id="agentPhase">—</strong>
+            </div>
+            <div class="telemetry-metric">
+              <span>Model</span>
+              <strong id="agentModel">—</strong>
+            </div>
+            <div class="telemetry-metric">
+              <span>Total tokens</span>
+              <strong id="agentTokens">—</strong>
+            </div>
+            <div class="telemetry-metric">
+              <span>Position</span>
+              <strong id="agentPosition">—</strong>
+            </div>
+          </div>
+
+          <section class="activity-block">
+            <h3>Current state</h3>
+            <p id="agentReason" class="activity-copy">
+              The agent process has not published a state yet.
+            </p>
+          </section>
+
+          <div class="plan-grid">
+            <section class="activity-block">
+              <h3>Mission</h3>
+              <p id="agentMission" class="activity-copy">No mission reported.</p>
+            </section>
+            <section class="activity-block">
+              <h3>Autonomous objective</h3>
+              <p id="agentObjective" class="activity-copy">No objective reported.</p>
+            </section>
+          </div>
+
+          <section class="activity-block">
+            <h3>Latest model decision</h3>
+            <div id="agentDecision" class="decision-summary">No decision reported.</div>
+          </section>
+
+          <section class="activity-block">
+            <h3>Observed world and controller</h3>
+            <p id="agentWorld" class="activity-copy">No observation reported.</p>
+          </section>
+
+          <section class="activity-block">
+            <div class="section-heading">
+              <h3>Recent tool calls</h3>
+              <span class="meta">Newest first</span>
+            </div>
+            <div id="agentTools" class="tool-list">
+              <p class="empty-state">No tool calls reported.</p>
+            </div>
+          </section>
+        </div>
+
         <div class="card output">
           <div class="output-header">
             <h2>Response</h2>

@@ -4,6 +4,7 @@ use std::thread;
 use crate::bot::{ApiCommand, ChatLog, PendingReplies};
 use crate::types::Vec3;
 use super::routes::handle_api_connection;
+use super::telemetry::AgentTelemetryStore;
 
 pub(crate) fn run_api_server(
     addr: &str,
@@ -20,6 +21,7 @@ pub(crate) fn run_api_server(
             return;
         }
     };
+    let agent_telemetry = AgentTelemetryStore::default();
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(v) => v,
@@ -30,6 +32,7 @@ pub(crate) fn run_api_server(
         let last_pos = Arc::clone(&last_pos);
         let pending_replies = pending_replies.clone();
         let chat_log = Arc::clone(&chat_log);
+        let agent_telemetry = agent_telemetry.clone();
         thread::spawn(move || {
             handle_api_connection(
                 stream,
@@ -38,6 +41,7 @@ pub(crate) fn run_api_server(
                 last_pos,
                 pending_replies,
                 chat_log,
+                agent_telemetry,
             );
         });
     }

@@ -14,6 +14,7 @@ use super::request::{
     read_http_request, request_is_authorized,
 };
 use super::response::{json_error, json_ok, write_http_response, write_json_error};
+use super::telemetry::AgentTelemetryStore;
 
 pub(super) fn handle_api_connection(
     mut stream: std::net::TcpStream,
@@ -22,6 +23,7 @@ pub(super) fn handle_api_connection(
     last_pos: Arc<Mutex<Vec3>>,
     pending_replies: PendingReplies,
     chat_log: Arc<Mutex<ChatLog>>,
+    agent_telemetry: AgentTelemetryStore,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut req_bytes = match read_http_request(&mut stream) {
@@ -74,6 +76,25 @@ pub(super) fn handle_api_connection(
         let mut handled = true;
         match (method, endpoint) {
             ("GET", "/health") => {}
+            ("GET", "/agent/telemetry") => {
+                response = agent_telemetry.snapshot().to_string();
+                response_type = "application/json";
+            }
+            ("POST", "/agent/telemetry") => match agent_telemetry.publish(&body) {
+                Ok(published) => {
+                    response = json!({
+                        "ok": true,
+                        "revision": published.revision,
+                        "changed": published.changed,
+                    })
+                    .to_string();
+                    response_type = "application/json";
+                }
+                Err(error) => {
+                    write_json_error(&mut stream, "400 Bad Request", error);
+                    return;
+                }
+            },
             ("GET", "/where") => {
                 if let Ok(pos) = last_pos.lock() {
                     response = format!("pos=({:.2},{:.2},{:.2})", pos.x, pos.y, pos.z);
