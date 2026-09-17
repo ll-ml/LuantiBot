@@ -4,7 +4,7 @@ use reqwest::Url;
 use serde_json::{json, Value};
 
 use super::api_client::{post, post_query};
-use super::provider::ToolCall;
+use super::decision::ToolCall;
 use super::planner::{item_is_low_value, low_value_request_is_authorized, node_is_low_value};
 use super::state::{
     AgentState, CraftableItemView, FurnaceView, GoalStatus, ObservationSnapshot,

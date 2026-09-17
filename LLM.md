@@ -1,5 +1,9 @@
 # LLM Agent
 
+> This is the temporary legacy policy retained for comparison and rollback on the Jev migration
+> branch. New controller work is documented in `JEV.md`. The legacy invocation remains the default
+> during the first migration milestone; `--policy llm` selects it explicitly.
+
 The agent is a separate process that observes and controls a running `join` bot through its REST API. It supports OpenAI's Responses API, OpenAI-compatible Chat Completions servers, bearer-token authentication, native function tools, persistent goals/state, and token accounting.
 
 ## 1. Start the game bot
@@ -97,7 +101,7 @@ shows how much of that input received cache treatment.
 ## Live Web UI telemetry
 
 While the agent runs, it automatically publishes a compact status snapshot to the bot API. Open
-the controller with `cd web && yarn dev` and its **LLM Agent Activity** panel will show the current
+the controller with `cd web && yarn dev` and its **Bot Controller Activity** panel will show the current
 phase and reason, mission/objective, model latency and token usage, selected tool names and
 arguments, execution results and timings, recent tool history, and a small world/controller
 summary. The panel pauses polling in a hidden browser tab and avoids rebuilding unchanged data.

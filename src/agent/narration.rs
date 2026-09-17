@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::provider::ToolCall;
+use super::decision::ToolCall;
 
 pub(super) fn action_narration(call: &ToolCall) -> Option<String> {
     let args = &call.arguments;

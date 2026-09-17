@@ -12,7 +12,7 @@
         <p class="eyebrow">Human Control Panel</p>
         <h1>Luanti Bot Controller</h1>
         <p class="subtitle">
-          Control the bot and inspect live LLM decisions without adding model context.
+          Control the bot and inspect live policy decisions without adding inference context.
         </p>
       </div>
       <div class="status-pill" id="connectionStatus">Disconnected</div>
@@ -248,7 +248,7 @@
           <div class="monitor-header">
             <div>
               <p class="eyebrow">Local telemetry</p>
-              <h2>LLM Agent Activity</h2>
+              <h2>Bot Controller Activity</h2>
             </div>
             <div class="monitor-actions">
               <span id="agentStatus" class="telemetry-status is-offline">Not started</span>
@@ -295,7 +295,7 @@
           </div>
 
           <section class="activity-block">
-            <h3>Latest model decision</h3>
+            <h3>Latest policy decision</h3>
             <div id="agentDecision" class="decision-summary">No decision reported.</div>
           </section>
 
@@ -306,11 +306,11 @@
 
           <section class="activity-block">
             <div class="section-heading">
-              <h3>Recent tool calls</h3>
+              <h3>Recent actions</h3>
               <span class="meta">Newest first</span>
             </div>
             <div id="agentTools" class="tool-list">
-              <p class="empty-state">No tool calls reported.</p>
+              <p class="empty-state">No actions reported.</p>
             </div>
           </section>
         </div>

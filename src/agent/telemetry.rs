@@ -7,16 +7,19 @@ use reqwest::{blocking::Client, Url};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::provider::{TokenUsage, ToolCall};
+use super::decision::{TokenUsage, ToolCall};
+use super::jev_policy::JevPolicyDecision;
 use super::state::AgentState;
 use super::util::clip_chars;
 
 const TELEMETRY_HEARTBEAT: Duration = Duration::from_secs(2);
 const RECENT_TOOL_LIMIT: usize = 12;
+const TOP_CANDIDATE_LIMIT: usize = 8;
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct DecisionTelemetry {
     status: String,
+    policy: String,
     tick: u64,
     context_bytes: usize,
     offered_tools: usize,
@@ -28,6 +31,28 @@ pub(super) struct DecisionTelemetry {
     error: Option<String>,
     active_tool: Option<ActiveToolTelemetry>,
     last_execution: Option<ToolExecutionTelemetry>,
+    jev: Option<JevDecisionTelemetry>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct JevDecisionTelemetry {
+    proposed_candidate: String,
+    proposed_probability: f64,
+    selected_candidate: String,
+    selected_probability: f64,
+    confidence: f64,
+    minimum_confidence: f64,
+    required_confidence: f64,
+    deterministic: bool,
+    execution_enabled: bool,
+    fallback_reason: Option<String>,
+    top_candidates: Vec<CandidateProbabilityTelemetry>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CandidateProbabilityTelemetry {
+    id: String,
+    probability: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -56,6 +81,7 @@ impl DecisionTelemetry {
     pub fn idle(tick: u64) -> Self {
         Self {
             status: "idle".to_string(),
+            policy: "unknown".to_string(),
             tick,
             context_bytes: 0,
             offered_tools: 0,
@@ -67,6 +93,7 @@ impl DecisionTelemetry {
             error: None,
             active_tool: None,
             last_execution: None,
+            jev: None,
         }
     }
 
@@ -107,6 +134,7 @@ impl DecisionTelemetry {
             error: None,
             active_tool: None,
             last_execution: None,
+            ..Self::idle(tick)
         }
     }
 
@@ -126,6 +154,46 @@ impl DecisionTelemetry {
             error: Some(clip_chars(error, 500)),
             ..Self::idle(tick)
         }
+    }
+
+    pub fn set_policy(&mut self, policy: &str) {
+        self.policy = policy.to_string();
+    }
+
+    pub fn set_jev(
+        &mut self,
+        decision: &JevPolicyDecision,
+        minimum_confidence: f64,
+        execution_enabled: bool,
+    ) {
+        let mut top_candidates = decision
+            .probabilities
+            .iter()
+            .map(|(id, probability)| CandidateProbabilityTelemetry {
+                id: id.clone(),
+                probability: *probability,
+            })
+            .collect::<Vec<_>>();
+        top_candidates.sort_by(|left, right| {
+            right
+                .probability
+                .total_cmp(&left.probability)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        top_candidates.truncate(TOP_CANDIDATE_LIMIT);
+        self.jev = Some(JevDecisionTelemetry {
+            proposed_candidate: decision.proposed_id.clone(),
+            proposed_probability: decision.proposed_probability,
+            selected_candidate: decision.selected_id.clone(),
+            selected_probability: decision.selected_probability,
+            confidence: decision.confidence,
+            minimum_confidence,
+            required_confidence: decision.required_confidence,
+            deterministic: decision.deterministic,
+            execution_enabled,
+            fallback_reason: decision.fallback_reason.clone(),
+            top_candidates,
+        });
     }
 
     pub fn start_tool(&mut self, call: &ToolCall, index: usize, total: usize) {
@@ -461,5 +529,37 @@ mod tests {
         assert_eq!(value["selected_tools"][0]["name"], "move");
         assert_eq!(value["request_latency_ms"], 250);
         assert!(!value.to_string().contains("provider-call-id"));
+    }
+
+    #[test]
+    fn jev_trace_exposes_bounded_probabilities_without_state_or_credentials() {
+        let mut probabilities = std::collections::BTreeMap::new();
+        for index in 0..12 {
+            probabilities.insert(format!("candidate_{index}"), f64::from(index) / 66.0);
+        }
+        let jev = JevPolicyDecision {
+            proposed_id: "candidate_11".to_string(),
+            selected_id: "candidate_11".to_string(),
+            confidence: 0.81,
+            required_confidence: 0.65,
+            proposed_probability: 0.75,
+            selected_probability: 0.75,
+            probabilities,
+            usage: TokenUsage::default(),
+            fallback_reason: None,
+            deterministic: false,
+            context_bytes: 512,
+        };
+        let mut telemetry = DecisionTelemetry::idle(7);
+        telemetry.set_policy("jev");
+        telemetry.set_jev(&jev, 0.65, false);
+        let value = serde_json::to_value(telemetry).unwrap();
+
+        assert_eq!(value["policy"], "jev");
+        assert_eq!(value["jev"]["selected_candidate"], "candidate_11");
+        assert_eq!(value["jev"]["proposed_probability"], 0.75);
+        assert_eq!(value["jev"]["execution_enabled"], false);
+        assert_eq!(value["jev"]["top_candidates"].as_array().unwrap().len(), 8);
+        assert!(!value.to_string().contains("api_key"));
     }
 }

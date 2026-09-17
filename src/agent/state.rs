@@ -5,7 +5,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
-use super::provider::TokenUsage;
+use super::decision::TokenUsage;
 use super::util::clip_chars;
 
 const ACTION_HISTORY_LIMIT: usize = 40;

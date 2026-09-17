@@ -1,9 +1,12 @@
 //! Command-line options and dispatch; connection workflows live in dedicated modules.
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::agent::{run_agent_loop, AgentConfig, LlmApi};
+use crate::agent::{
+    run_agent_loop, AgentConfig, ControllerConfig, JevControllerConfig, LlmApi,
+    LlmControllerConfig,
+};
 use crate::bot::{follow_command, follow_player, join_bot, move_forward};
 use super::diagnostics::{connect, handshake, login, observe, ping_server, send_chat, trace_session};
 
@@ -13,6 +16,12 @@ use super::diagnostics::{connect, handshake, login, observe, ping_server, send_c
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum PolicyKind {
+    Llm,
+    Jev,
 }
 
 #[derive(Subcommand)]
@@ -144,7 +153,7 @@ enum Commands {
         #[arg(long, default_value = "15")]
         seconds: u64,
     },
-    /// Run an LLM agent loop using the REST API
+    /// Run an autonomous policy loop using the REST API
     Agent {
         /// API base address (host:port or http://host:port)
         #[arg(long, default_value = "127.0.0.1:9123")]
@@ -152,6 +161,9 @@ enum Commands {
         /// API token (optional)
         #[arg(long, default_value = "")]
         api_token: String,
+        /// Decision policy. LLM remains the transition default; select jev to use System One.
+        #[arg(long, value_enum, default_value_t = PolicyKind::Llm)]
+        policy: PolicyKind,
         /// LLM server URL (OpenAI-compatible)
         #[arg(long, default_value = "http://127.0.0.1:8080/v1/chat/completions")]
         llm_url: String,
@@ -164,6 +176,24 @@ enum Commands {
         /// Model name for the LLM server
         #[arg(long, default_value = "local-model")]
         model: String,
+        /// TypeSafe System One endpoint
+        #[arg(long, default_value = "https://api.typesafe.ai/v1/systemone")]
+        jev_url: String,
+        /// TypeSafe API key (defaults to TYPESAFE_API_KEY)
+        #[arg(long, env = "TYPESAFE_API_KEY", default_value = "")]
+        jev_api_key: String,
+        /// Jev model or alias
+        #[arg(long, default_value = "jev-latest")]
+        jev_model: String,
+        /// Minimum confidence for routine Jev actions; material actions require at least 0.70
+        #[arg(long, default_value = "0.65")]
+        jev_min_confidence: f64,
+        /// Jev request timeout in seconds
+        #[arg(long, default_value = "15")]
+        jev_timeout_secs: u64,
+        /// Allow Jev selections to execute. Without this flag Jev runs safely in dry-run mode.
+        #[arg(long, default_value_t = false)]
+        jev_execute: bool,
         /// Bot player name (used to ignore self chat)
         #[arg(long, default_value = "Bot")]
         bot_name: String,
@@ -299,10 +329,17 @@ pub fn run() -> Result<()> {
         Commands::Agent {
             api,
             api_token,
+            policy,
             llm_url,
             llm_api,
             llm_api_key,
             model,
+            jev_url,
+            jev_api_key,
+            jev_model,
+            jev_min_confidence,
+            jev_timeout_secs,
+            jev_execute,
             bot_name,
             allow,
             passive,
@@ -321,10 +358,26 @@ pub fn run() -> Result<()> {
         } => run_agent_loop(AgentConfig {
             api_base: api,
             api_token,
-            llm_url,
-            llm_api,
-            llm_api_key,
-            model,
+            controller: match policy {
+                PolicyKind::Llm => ControllerConfig::Llm(LlmControllerConfig {
+                    url: llm_url,
+                    api: llm_api,
+                    api_key: llm_api_key,
+                    model,
+                    temperature,
+                    max_tokens,
+                    reasoning_effort: (!reasoning_effort.trim().is_empty())
+                        .then_some(reasoning_effort),
+                }),
+                PolicyKind::Jev => ControllerConfig::Jev(JevControllerConfig {
+                    url: jev_url,
+                    api_key: jev_api_key,
+                    model: jev_model,
+                    minimum_confidence: jev_min_confidence,
+                    timeout_secs: jev_timeout_secs,
+                    execute: jev_execute,
+                }),
+            },
             bot_name,
             allowed_senders: allow,
             passive,
@@ -332,14 +385,51 @@ pub fn run() -> Result<()> {
             observe_radius: radius,
             interval_ms,
             idle_interval_ms,
-            temperature,
-            max_tokens,
-            reasoning_effort: (!reasoning_effort.trim().is_empty()).then_some(reasoning_effort),
             initial_goal: goal,
             state_file,
             max_tool_calls,
             narrate_actions: !quiet_actions,
             narration_cooldown_secs,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_jev_policy_in_safe_dry_run_mode() {
+        let cli = Cli::try_parse_from([
+            "luanti-proto-bot",
+            "agent",
+            "--policy",
+            "jev",
+            "--jev-api-key",
+            "test-key",
+        ])
+        .expect("Jev CLI should parse");
+        let Commands::Agent {
+            policy,
+            jev_api_key,
+            jev_execute,
+            ..
+        } = cli.command
+        else {
+            panic!("expected agent command");
+        };
+        assert_eq!(policy, PolicyKind::Jev);
+        assert_eq!(jev_api_key, "test-key");
+        assert!(!jev_execute);
+    }
+
+    #[test]
+    fn legacy_agent_policy_remains_the_transition_default() {
+        let cli = Cli::try_parse_from(["luanti-proto-bot", "agent"])
+            .expect("legacy CLI should parse");
+        let Commands::Agent { policy, .. } = cli.command else {
+            panic!("expected agent command");
+        };
+        assert_eq!(policy, PolicyKind::Llm);
     }
 }

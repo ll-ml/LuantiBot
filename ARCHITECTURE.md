@@ -5,11 +5,12 @@ source is organized around runtime boundaries rather than placing every workflow
 
 - `src/app/` parses CLI arguments, runs short diagnostic commands, and owns shared connection and
   authentication setup.
-- `src/agent/` owns the LLM decision loop, provider protocol, compact model-facing state projection,
-  prompt, persistent state, policy, narration, and tool adapters. The persisted state stays
-  lossless while request-time policy removes irrelevant tool schemas and redundant context.
+- `src/agent/` owns the decision loop, persistent state, candidate policy, narration, and action
+  adapters. The Jev path projects a compact semantic state and lets System One choose only among
+  deterministic, fully parameterized candidates; native validation remains authoritative. The
+  older generative provider and prompt modules remain temporarily for migration comparison.
   `agent/mod.rs` is the single facade; the former parallel `src/agent.rs` no longer exists.
-- `src/api/` is the local HTTP boundary used by the web controller and LLM agent. Request parsing,
+- `src/api/` is the local HTTP boundary used by the web controller and policy agent. Request parsing,
   responses, asynchronous replies, routing, and listener startup are separated.
 - `src/bot/` owns the live in-game controller. API command dispatch, chat history, observations,
   entity decoding, navigation, standalone movement modes, and the main session loop are separate.
@@ -22,6 +23,6 @@ source is organized around runtime boundaries rather than placing every workflow
 - `src/world/` contains map-block storage and node definitions.
 - `src/codec.rs` and `src/types.rs` hold small primitives shared across those boundaries.
 
-The command names, flags, REST endpoints, payloads, and startup workflow are unchanged by this
-layout. `cargo test` exercises the pure protocol, physics, agent-policy, API parsing, and native task
-logic without requiring a live Luanti server.
+`cargo test` exercises the pure protocol, physics, candidate policy, Jev wire format, API parsing,
+and native task logic without requiring a live Luanti server or TypeSafe account. See `JEV.md` for
+the new controller workflow and `LLM.md` for the temporary legacy provider.

@@ -7,8 +7,14 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use super::api_client::{fetch_chat, fetch_observation, parse_http_url};
+use super::candidates::{
+    generate_candidates, ActionCandidate, ActionRisk, CandidateContext,
+};
 use super::chat::{advance_chat_cursor, apply_chat_goal_commands, sender_allowed};
-use super::provider::{request_decision, LlmApi, ProviderConfig, ToolCall};
+use super::decision::{TokenUsage, ToolCall};
+use super::jev::{JevClient, JevConfig};
+use super::jev_policy::{JevPolicy, JevPolicyDecision};
+use super::provider::{request_decision, LlmApi, ProviderConfig};
 use super::narration::action_narration;
 use super::planner::progression_recommendations;
 use super::policy::{
@@ -26,10 +32,7 @@ use super::util::clip_chars;
 pub struct AgentConfig {
     pub api_base: String,
     pub api_token: String,
-    pub llm_url: String,
-    pub llm_api: LlmApi,
-    pub llm_api_key: String,
-    pub model: String,
+    pub controller: ControllerConfig,
     pub bot_name: String,
     pub allowed_senders: Vec<String>,
     pub passive: bool,
@@ -37,9 +40,6 @@ pub struct AgentConfig {
     pub observe_radius: i32,
     pub interval_ms: u64,
     pub idle_interval_ms: u64,
-    pub temperature: f32,
-    pub max_tokens: u32,
-    pub reasoning_effort: Option<String>,
     pub initial_goal: Option<String>,
     pub state_file: Option<PathBuf>,
     pub max_tool_calls: usize,
@@ -47,22 +47,122 @@ pub struct AgentConfig {
     pub narration_cooldown_secs: u64,
 }
 
+#[derive(Clone, Debug)]
+pub enum ControllerConfig {
+    Llm(LlmControllerConfig),
+    Jev(JevControllerConfig),
+}
+
+#[derive(Clone, Debug)]
+pub struct LlmControllerConfig {
+    pub url: String,
+    pub api: LlmApi,
+    pub api_key: String,
+    pub model: String,
+    pub temperature: f32,
+    pub max_tokens: u32,
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct JevControllerConfig {
+    pub url: String,
+    pub api_key: String,
+    pub model: String,
+    pub minimum_confidence: f64,
+    pub timeout_secs: u64,
+    /// False runs the complete policy path but suppresses all game actions.
+    pub execute: bool,
+}
+
+enum Controller {
+    Llm {
+        provider: ProviderConfig,
+        tools: Vec<serde_json::Value>,
+        instructions: String,
+    },
+    Jev {
+        policy: JevPolicy,
+        execute: bool,
+    },
+}
+
+impl Controller {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Llm { .. } => "llm",
+            Self::Jev { .. } => "jev",
+        }
+    }
+
+    fn model(&self) -> &str {
+        match self {
+            Self::Llm { provider, .. } => &provider.model,
+            Self::Jev { policy, .. } => policy.model(),
+        }
+    }
+
+    fn execution_enabled(&self) -> bool {
+        match self {
+            Self::Llm { .. } => true,
+            Self::Jev { execute, .. } => *execute,
+        }
+    }
+}
+
+struct ControllerDecision {
+    calls: Vec<ToolCall>,
+    text: Option<String>,
+    usage: TokenUsage,
+    incomplete_reason: Option<String>,
+    context_bytes: usize,
+    offered_actions: usize,
+    returned_calls: usize,
+    made_request: bool,
+    jev: Option<JevPolicyDecision>,
+    jev_candidate: Option<ActionCandidate>,
+}
+
 pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
     let api_base = parse_http_url(&cfg.api_base).context("parse bot API base")?;
-    let llm_url = parse_http_url(&cfg.llm_url).context("parse LLM URL")?;
     let client = Client::builder()
         .timeout(Duration::from_secs(120))
         .connect_timeout(Duration::from_secs(10))
         .build()
         .context("build HTTP client")?;
-    let provider = ProviderConfig {
-        url: llm_url,
-        api: cfg.llm_api,
-        api_key: cfg.llm_api_key.clone(),
-        model: cfg.model.clone(),
-        temperature: cfg.temperature,
-        max_tokens: cfg.max_tokens,
-        reasoning_effort: cfg.reasoning_effort.clone(),
+    let autonomous = cfg.autonomous && !cfg.passive;
+    let controller = match &cfg.controller {
+        ControllerConfig::Llm(llm) => Controller::Llm {
+            provider: ProviderConfig {
+                url: parse_http_url(&llm.url).context("parse LLM URL")?,
+                api: llm.api,
+                api_key: llm.api_key.clone(),
+                model: llm.model.clone(),
+                temperature: llm.temperature,
+                max_tokens: llm.max_tokens,
+                reasoning_effort: llm.reasoning_effort.clone(),
+            },
+            tools: tool_definitions(cfg.passive, autonomous),
+            instructions: agent_instructions(cfg.passive, autonomous),
+        },
+        ControllerConfig::Jev(jev) => {
+            let jev_config = JevConfig::new(jev.api_key.clone())
+                .context("configure Jev")?
+                .with_endpoint(parse_http_url(&jev.url).context("parse Jev URL")?)
+                .context("configure Jev endpoint")?
+                .with_model(jev.model.clone())
+                .context("configure Jev model")?
+                .with_timeout(Duration::from_secs(jev.timeout_secs))
+                .context("configure Jev timeout")?;
+            let policy = JevPolicy::new(
+                JevClient::new(jev_config).context("build Jev client")?,
+                jev.minimum_confidence,
+            )?;
+            Controller::Jev {
+                policy,
+                execute: jev.execute,
+            }
+        }
     };
     let mut state = load_state(cfg.state_file.as_deref())?;
     if state.current_goal.is_none() {
@@ -76,19 +176,17 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
         }
     }
 
-    let autonomous = cfg.autonomous && !cfg.passive;
     let mut decision_telemetry = DecisionTelemetry::idle(state.tick);
+    decision_telemetry.set_policy(controller.kind());
     let mut telemetry = TelemetryPublisher::new(
         &api_base,
         &cfg.api_token,
-        &cfg.model,
+        controller.model(),
         &cfg.bot_name,
         cfg.passive,
         autonomous,
     );
-    let tools = tool_definitions(cfg.passive, autonomous);
     let mut unavailable_tools = HashSet::<String>::new();
-    let instructions = agent_instructions(cfg.passive, autonomous);
     let tick_interval = Duration::from_millis(cfg.interval_ms.max(250));
     let idle_interval = Duration::from_millis(cfg.idle_interval_ms.max(cfg.interval_ms.max(250)));
     let mut next_idle_decision = Instant::now();
@@ -102,10 +200,10 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
     let mut last_narration: Option<(String, Instant)> = None;
 
     println!(
-        "agent started: model={} api={:?} tools={} autonomous={} narrate={} cooldown={}s state_file={}",
-        cfg.model,
-        cfg.llm_api,
-        tools.len(),
+        "agent started: policy={} model={} execution={} autonomous={} narrate={} cooldown={}s state_file={}",
+        controller.kind(),
+        controller.model(),
+        controller.execution_enabled(),
         autonomous,
         cfg.narrate_actions,
         narration_cooldown.as_secs(),
@@ -233,78 +331,155 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
             continue;
         }
 
-        state.transition(AgentPhase::Planning, "requesting the next tool action");
+        state.transition(AgentPhase::Planning, "requesting the next policy action");
         let continuing_player_instruction = chat_action_followup_due;
         let player_instruction_turn = is_player_instruction_turn(
             !state.pending_chat.is_empty(),
             continuing_player_instruction,
         );
-        let mut prompt_state = state.prompt_view();
-        let recommendations = progression_recommendations(&state.observation);
-        if !recommendations.is_empty() {
-            if let Some(view) = prompt_state.as_object_mut() {
-                view.insert(
-                    "progression_recommendations".to_string(),
-                    serde_json::to_value(recommendations).unwrap_or_else(|_| json!([])),
-                );
-            }
-        }
-        let mut input_view = json!({"state": prompt_state});
-        if let Some(context) = input_view.as_object_mut() {
-            if !cfg.allowed_senders.is_empty() {
-                context.insert(
-                    "authorized_players".to_string(),
-                    json!(&cfg.allowed_senders),
-                );
-            }
-            if continuing_player_instruction {
-                context.insert("continue_after_reply".to_string(), json!(true));
-            }
-        }
-        let input = input_view.to_string();
-
-        let decision_tools: Vec<serde_json::Value> = tools
-            .iter()
-            .filter(|tool| {
-                let name = tool
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                tool_is_available(
-                    name,
-                    !state.pending_chat.is_empty(),
-                    state.observation.server_mod_schema_version,
-                    &unavailable_tools,
-                ) && tool_is_relevant(name, &state, player_instruction_turn)
-            })
-            .cloned()
-            .collect();
-
-        decision_telemetry = DecisionTelemetry::requesting(
-            state.tick,
-            input.len(),
-            decision_tools.len(),
-        );
-        telemetry.publish(&state, &decision_telemetry);
         let decision_started = Instant::now();
-        let decision = match request_decision(
-            &client,
-            &provider,
-            &instructions,
-            &input,
-            &decision_tools,
-        ) {
+        let request_context_bytes;
+        let offered_actions;
+        let decision_result: Result<ControllerDecision> = match &controller {
+            Controller::Llm {
+                provider,
+                tools,
+                instructions,
+            } => {
+                let mut prompt_state = state.prompt_view();
+                let recommendations = progression_recommendations(&state.observation);
+                if !recommendations.is_empty() {
+                    if let Some(view) = prompt_state.as_object_mut() {
+                        view.insert(
+                            "progression_recommendations".to_string(),
+                            serde_json::to_value(recommendations).unwrap_or_else(|_| json!([])),
+                        );
+                    }
+                }
+                let mut input_view = json!({"state": prompt_state});
+                if let Some(context) = input_view.as_object_mut() {
+                    if !cfg.allowed_senders.is_empty() {
+                        context.insert(
+                            "authorized_players".to_string(),
+                            json!(&cfg.allowed_senders),
+                        );
+                    }
+                    if continuing_player_instruction {
+                        context.insert("continue_after_reply".to_string(), json!(true));
+                    }
+                }
+                let input = input_view.to_string();
+                let decision_tools: Vec<serde_json::Value> = tools
+                    .iter()
+                    .filter(|tool| {
+                        let name = tool
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("");
+                        tool_is_available(
+                            name,
+                            !state.pending_chat.is_empty(),
+                            state.observation.server_mod_schema_version,
+                            &unavailable_tools,
+                        ) && tool_is_relevant(name, &state, player_instruction_turn)
+                    })
+                    .cloned()
+                    .collect();
+                request_context_bytes = input.len();
+                offered_actions = decision_tools.len();
+                decision_telemetry = DecisionTelemetry::requesting(
+                    state.tick,
+                    request_context_bytes,
+                    offered_actions,
+                );
+                decision_telemetry.set_policy(controller.kind());
+                telemetry.publish(&state, &decision_telemetry);
+                request_decision(&client, provider, instructions, &input, &decision_tools).map(
+                    |decision| {
+                        let returned_calls = decision.tool_calls.len();
+                        ControllerDecision {
+                            calls: decision.tool_calls,
+                            text: decision.text,
+                            usage: decision.usage,
+                            incomplete_reason: decision.incomplete_reason,
+                            context_bytes: request_context_bytes,
+                            offered_actions,
+                            returned_calls,
+                            made_request: true,
+                            jev: None,
+                            jev_candidate: None,
+                        }
+                    },
+                )
+            }
+            Controller::Jev { policy, .. } => {
+                let candidates = generate_candidates(CandidateContext {
+                    state: &state,
+                    allowed_senders: &cfg.allowed_senders,
+                    bot_name: &cfg.bot_name,
+                    passive: cfg.passive,
+                    autonomous,
+                    player_instruction_turn,
+                    unavailable_tools: &unavailable_tools,
+                });
+                request_context_bytes = super::jev_policy::compact_state(
+                    &state,
+                    &cfg.allowed_senders,
+                )
+                .to_string()
+                .len();
+                offered_actions = candidates.len();
+                decision_telemetry = DecisionTelemetry::requesting(
+                    state.tick,
+                    request_context_bytes,
+                    offered_actions,
+                );
+                decision_telemetry.set_policy(controller.kind());
+                telemetry.publish(&state, &decision_telemetry);
+                policy
+                    .decide(&state, &cfg.allowed_senders, &candidates)
+                    .and_then(|jev| {
+                        let selected = jev
+                            .selected(&candidates)
+                            .context("selected Jev candidate disappeared")?;
+                        anyhow::ensure!(
+                            selected.generated_tick == state.tick,
+                            "selected Jev candidate is stale"
+                        );
+                        let calls = selected.to_tool_call().into_iter().collect::<Vec<_>>();
+                        let jev_candidate = selected.clone();
+                        let returned_calls = usize::from(!matches!(
+                            selected.action,
+                            super::candidates::CandidateAction::Wait
+                        ));
+                        Ok(ControllerDecision {
+                            calls,
+                            text: None,
+                            usage: jev.usage.clone(),
+                            incomplete_reason: None,
+                            context_bytes: jev.context_bytes,
+                            offered_actions: candidates.len(),
+                            returned_calls,
+                            made_request: !jev.deterministic,
+                            jev: Some(jev),
+                            jev_candidate: Some(jev_candidate),
+                        })
+                    })
+            }
+        };
+        let mut decision = match decision_result {
             Ok(decision) => decision,
             Err(error) => {
-                let message = format!("LLM request failed: {error:#}");
+                let message = format!("{} policy request failed: {error:#}", controller.kind());
                 state.record_action_result("plan", false, &message);
                 decision_telemetry = DecisionTelemetry::failed(
                     state.tick,
-                    input.len(),
-                    decision_tools.len(),
+                    request_context_bytes,
+                    offered_actions,
                     decision_started.elapsed(),
                     &message,
                 );
+                decision_telemetry.set_policy(controller.kind());
                 eprintln!("{message}");
                 telemetry.publish(&state, &decision_telemetry);
                 save_state(&state, cfg.state_file.as_deref());
@@ -317,20 +492,20 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
             }
         };
         let decision_latency = decision_started.elapsed();
-        let returned_tool_calls = decision.tool_calls.len();
-        state.record_usage(&decision.usage);
+        if decision.made_request {
+            state.record_usage(&decision.usage);
+        }
         println!(
-            "agent decision: tool_calls={} tools={} context_bytes={} input_tokens={} cached_input_tokens={} output_tokens={} incomplete={}",
-            decision.tool_calls.len(),
-            decision_tools.len(),
-            input.len(),
+            "agent decision: policy={} selected_calls={} candidates={} context_bytes={} input_tokens={} output_tokens={} incomplete={}",
+            controller.kind(),
+            decision.calls.len(),
+            decision.offered_actions,
+            decision.context_bytes,
             decision.usage.input,
-            decision.usage.cached_input,
             decision.usage.output,
             decision.incomplete_reason.as_deref().unwrap_or("no")
         );
-
-        let mut calls = decision.tool_calls;
+        let mut calls = std::mem::take(&mut decision.calls);
         if state.pending_chat.is_empty() {
             let before = calls.len();
             calls.retain(|call| call.name.trim() != "say");
@@ -340,7 +515,14 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
         }
         calls.retain(|call| !unavailable_tools.contains(call.name.trim()));
         if calls.is_empty() {
-            if let Some(reason) = decision.incomplete_reason.as_deref() {
+            if let Some(jev) = decision.jev.as_ref() {
+                let message = jev
+                    .fallback_reason
+                    .as_deref()
+                    .map(|reason| format!("Jev chose wait: {reason}"))
+                    .unwrap_or_else(|| "Jev chose wait and will observe again".to_string());
+                state.record_action_result("plan", true, &message);
+            } else if let Some(reason) = decision.incomplete_reason.as_deref() {
                 let message = format!(
                     "model output was incomplete ({reason}) before a tool call; increase --max-tokens (try 768 or 1024) or reduce reasoning effort"
                 );
@@ -360,42 +542,129 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
                 state.record_action_result("plan", false, "model returned no tool call or text");
             }
         }
+        if controller.execution_enabled() {
+            if let Some(candidate) = decision
+                .jev_candidate
+                .as_ref()
+                .filter(|candidate| candidate.risk == ActionRisk::Material)
+            {
+                let preflight = refresh_and_validate_jev_candidate(
+                    &client,
+                    &api_base,
+                    &cfg,
+                    &mut state,
+                    &unavailable_tools,
+                    autonomous,
+                    player_instruction_turn,
+                    candidate,
+                );
+                let blocked_reason = match preflight {
+                    Ok(true) => None,
+                    Ok(false) => Some(format!(
+                        "material candidate '{}' was no longer valid in the refreshed observation",
+                        candidate.id
+                    )),
+                    Err(error) => Some(format!(
+                        "could not refresh observation before material action '{}': {error:#}",
+                        candidate.id
+                    )),
+                };
+                if let Some(reason) = blocked_reason {
+                    calls.retain(|call| !is_external_game_tool(&call.name));
+                    apply_jev_wait_fallback(&mut decision, &reason);
+                    state.record_action_result("plan", false, &reason);
+                    eprintln!("Jev execution blocked: {reason}");
+                }
+            }
+        }
+        if let Some(jev) = decision.jev.as_ref() {
+            println!(
+                "jev decision: proposed={} proposed_probability={:.3} selected={} selected_probability={:.3} confidence={:.3} threshold={:.3} deterministic={} fallback={}",
+                jev.proposed_id,
+                jev.proposed_probability,
+                jev.selected_id,
+                jev.selected_probability,
+                jev.confidence,
+                jev.required_confidence,
+                jev.deterministic,
+                jev.fallback_reason.as_deref().unwrap_or("none"),
+            );
+        }
         if !state.pending_chat.is_empty()
-            && !calls.is_empty()
+            && controller.execution_enabled()
+            && (decision.jev.is_some() || !calls.is_empty())
             && !calls.iter().any(|call| call.name.trim() == "say")
         {
             if let Some(chat) = state.pending_chat.front() {
+                let message = if decision.jev.is_some() && calls.is_empty() {
+                    format!(
+                        "I can't safely act on that yet, {}. I'll keep observing.",
+                        chat.from
+                    )
+                } else {
+                    format!(
+                        "Got it, {}. I'll factor that into what I'm doing.",
+                        chat.from
+                    )
+                };
                 calls.insert(
                     0,
                     ToolCall {
                         id: "chat-ack-fallback".to_string(),
                         name: "say".to_string(),
-                        arguments: json!({
-                            "message": format!(
-                                "Got it, {}. I'll factor that into what I'm doing.",
-                                chat.from
-                            )
-                        }),
+                        arguments: json!({"message": message}),
                     },
                 );
             }
         }
         calls.sort_by_key(|call| is_external_game_tool(&call.name));
-        let calls: Vec<ToolCall> = calls
+        let call_limit = match &controller {
+            Controller::Jev { .. } => 2,
+            Controller::Llm { .. } => cfg.max_tool_calls.clamp(1, 8),
+        };
+        let mut calls: Vec<ToolCall> = calls
             .into_iter()
-            .take(cfg.max_tool_calls.clamp(1, 8))
+            .take(call_limit)
             .collect();
         decision_telemetry = DecisionTelemetry::ready(
             state.tick,
-            input.len(),
-            decision_tools.len(),
-            returned_tool_calls,
+            decision.context_bytes,
+            decision.offered_actions,
+            decision.returned_calls,
             &calls,
             decision_latency,
             &decision.usage,
             decision.incomplete_reason.as_deref(),
         );
+        decision_telemetry.set_policy(controller.kind());
+        if let (
+            Some(jev),
+            Controller::Jev {
+                policy,
+                execute,
+            },
+        ) = (decision.jev.as_ref(), &controller)
+        {
+            decision_telemetry.set_jev(jev, policy.minimum_confidence(), *execute);
+        }
         telemetry.publish(&state, &decision_telemetry);
+        if !controller.execution_enabled() {
+            if let Some(jev) = decision.jev.as_ref() {
+                let pending_messages = state.pending_chat.len();
+                state.record_action_result(
+                    "plan",
+                    true,
+                    &format!(
+                        "Jev dry run selected '{}' with confidence {:.3}; suppressed {} action(s) and shadow-consumed {} pending message(s), which remain in conversation history",
+                        jev.selected_id,
+                        jev.confidence,
+                        calls.len(),
+                        pending_messages,
+                    ),
+                );
+            }
+            suppress_dry_run_actions(&mut state, &mut calls);
+        }
 
         let mut external_action_taken = false;
         let mut external_action_succeeded = false;
@@ -503,7 +772,7 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
         );
 
         if !external_action_taken && state.phase == AgentPhase::Planning {
-            state.transition(AgentPhase::Idle, "model chose no external action");
+            state.transition(AgentPhase::Idle, "policy chose no external action");
         }
         next_goal_decision = Instant::now()
             + if external_action_taken {
@@ -542,6 +811,58 @@ pub fn run_agent_loop(cfg: AgentConfig) -> Result<()> {
     }
 }
 
+fn refresh_and_validate_jev_candidate(
+    client: &Client,
+    api_base: &reqwest::Url,
+    cfg: &AgentConfig,
+    state: &mut AgentState,
+    unavailable_tools: &HashSet<String>,
+    autonomous: bool,
+    player_instruction_turn: bool,
+    selected: &ActionCandidate,
+) -> Result<bool> {
+    let observation = fetch_observation(
+        client,
+        api_base,
+        &cfg.api_token,
+        cfg.observe_radius.clamp(1, 8),
+    )
+    .context("refresh bot observation for Jev preflight")?;
+    state.update_observation(observation);
+    let refreshed = generate_candidates(CandidateContext {
+        state,
+        allowed_senders: &cfg.allowed_senders,
+        bot_name: &cfg.bot_name,
+        passive: cfg.passive,
+        autonomous,
+        player_instruction_turn,
+        unavailable_tools,
+    });
+    Ok(refreshed
+        .iter()
+        .any(|candidate| candidate.action == selected.action && candidate.risk == selected.risk))
+}
+
+fn apply_jev_wait_fallback(decision: &mut ControllerDecision, reason: &str) {
+    let Some(jev) = decision.jev.as_mut() else {
+        return;
+    };
+    jev.selected_id = "wait".to_string();
+    jev.selected_probability = jev.probabilities.get("wait").copied().unwrap_or_default();
+    jev.fallback_reason = Some(match jev.fallback_reason.take() {
+        Some(existing) => format!("{existing}; {reason}"),
+        None => reason.to_string(),
+    });
+}
+
+fn suppress_dry_run_actions(state: &mut AgentState, calls: &mut Vec<ToolCall>) {
+    // A shadow decision consumes the pending queue once so it cannot trigger a
+    // paid evaluation on every tick. enqueue_chat already persisted the text
+    // in conversation_history, so the trace remains available for inspection.
+    state.clear_pending_chat();
+    calls.clear();
+}
+
 fn load_state(path: Option<&Path>) -> Result<AgentState> {
     match path {
         Some(path) if path.exists() => AgentState::load(path),
@@ -561,5 +882,70 @@ fn sleep_remaining(started: Instant, interval: Duration) {
     let elapsed = started.elapsed();
     if elapsed < interval {
         sleep(interval - elapsed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dry_run_discards_actions_once_but_keeps_chat_history() {
+        let mut state = AgentState::default();
+        state.enqueue_chat([PendingChatMessage {
+            id: 7,
+            from: "Alice".to_string(),
+            message: "mine coal".to_string(),
+        }]);
+        let mut calls = vec![ToolCall {
+            id: "candidate".to_string(),
+            name: "gather_resource".to_string(),
+            arguments: json!({"node": "mcl_core:stone_with_coal"}),
+        }];
+
+        suppress_dry_run_actions(&mut state, &mut calls);
+
+        assert!(calls.is_empty());
+        assert!(state.pending_chat.is_empty());
+        assert_eq!(state.conversation_history.len(), 1);
+        assert_eq!(state.conversation_history[0].message, "mine coal");
+    }
+
+    #[test]
+    fn preflight_fallback_reports_wait_probability() {
+        let mut decision = ControllerDecision {
+            calls: Vec::new(),
+            text: None,
+            usage: TokenUsage::default(),
+            incomplete_reason: None,
+            context_bytes: 0,
+            offered_actions: 2,
+            returned_calls: 1,
+            made_request: true,
+            jev: Some(JevPolicyDecision {
+                proposed_id: "mine".to_string(),
+                selected_id: "mine".to_string(),
+                confidence: 0.8,
+                required_confidence: 0.70,
+                proposed_probability: 0.8,
+                selected_probability: 0.8,
+                probabilities: std::collections::BTreeMap::from([
+                    ("mine".to_string(), 0.8),
+                    ("wait".to_string(), 0.2),
+                ]),
+                usage: TokenUsage::default(),
+                fallback_reason: None,
+                deterministic: false,
+                context_bytes: 0,
+            }),
+            jev_candidate: None,
+        };
+
+        apply_jev_wait_fallback(&mut decision, "stale observation");
+
+        let jev = decision.jev.unwrap();
+        assert_eq!(jev.selected_id, "wait");
+        assert_eq!(jev.selected_probability, 0.2);
+        assert_eq!(jev.fallback_reason.as_deref(), Some("stale observation"));
     }
 }

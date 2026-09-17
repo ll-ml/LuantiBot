@@ -1,4 +1,4 @@
-# Luanti Bot REST API (LLM Control Guide)
+# Luanti Bot REST API (Controller Guide)
 
 Base URL example: `http://127.0.0.1:9123`
 
@@ -8,7 +8,8 @@ If an API token is configured, include:
 Authorization: Bearer <TOKEN>
 ```
 
-For the built-in tool-calling agent, provider setup, goals, and persistent state, see [LLM.md](LLM.md).
+For the bounded Jev/System One controller, see [JEV.md](JEV.md). The temporary generative policy is
+documented in [LLM.md](LLM.md).
 
 ## Control Loop (Legacy/custom clients)
 
@@ -465,29 +466,40 @@ without a heartbeat but remains available for inspection.
   "agent": {
     "schema_version": 1,
     "bot_name": "Bot",
-    "model": "gpt-5-nano",
+    "model": "jev-latest",
     "tick": 84,
     "phase": "acting",
-    "phase_reason": "move: OK",
+    "phase_reason": "gather_resource: OK",
     "mission": {"description":"gather wood"},
     "objective": null,
-    "usage": {"requests":12,"input_tokens":21000,"cached_input_tokens":8000,"output_tokens":950,"total_tokens":21950},
+    "usage": {"requests":12,"input_tokens":6200,"cached_input_tokens":0,"output_tokens":420,"total_tokens":6620},
     "decision": {
       "status": "executing",
+      "policy": "jev",
       "request_latency_ms": 740,
       "offered_tools": 9,
-      "selected_tools": [{"name":"move","arguments":{"direction":"forward","steps":2}}]
+      "selected_tools": [{"name":"gather_resource","arguments":{"node":"mcl_core:tree","count":2,"radius":16}}],
+      "jev": {
+        "proposed_candidate": "bootstrap_gather_logs",
+        "proposed_probability": 0.78,
+        "selected_candidate": "bootstrap_gather_logs",
+        "selected_probability": 0.78,
+        "confidence": 0.74,
+        "required_confidence": 0.70,
+        "execution_enabled": true
+      }
     },
     "recent_tools": [
-      {"tick":83,"name":"move","arguments":{"direction":"forward"},"ok":true,"result":"OK","position":[1,64,2]}
+      {"tick":83,"name":"gather_resource","arguments":{"node":"mcl_core:tree","count":2,"radius":16},"ok":true,"result":"OK","position":[1,64,2]}
     ]
   }
 }
 ```
 
 Telemetry reports phases, goals, selected calls, arguments, results, timings, controller/world
-summary, and existing token accounting. It intentionally does not expose provider credentials,
-prompts, or hidden model reasoning.
+summary, and existing token accounting. Jev snapshots additionally expose the bounded candidate
+selection, confidence threshold, and top probabilities. It intentionally does not expose provider
+credentials, full inference state, prompts, or hidden model reasoning.
 
 ### `POST /agent/telemetry`
 
@@ -496,7 +508,7 @@ snapshot refreshes its heartbeat without incrementing `revision`. This endpoint 
 Bearer token as every other bot API endpoint.
 
 Publishing runs on a bounded background path and the Web UI polls only this local endpoint, so the
-telemetry is never inserted into an LLM request and consumes no additional model tokens.
+telemetry is never inserted into an inference request and consumes no additional model tokens.
 
 ## Health / Where
 

@@ -1,10 +1,11 @@
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::{StatusCode, Url};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::str::FromStr;
+
+use super::decision::{TokenUsage, ToolCall};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LlmApi {
@@ -49,22 +50,6 @@ pub struct ProviderConfig {
     pub temperature: f32,
     pub max_tokens: u32,
     pub reasoning_effort: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct TokenUsage {
-    pub input: u64,
-    #[serde(default)]
-    pub cached_input: u64,
-    pub output: u64,
-    pub total: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: Value,
 }
 
 #[derive(Clone, Debug, Default)]

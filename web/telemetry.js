@@ -84,11 +84,13 @@ function renderDecision(decision) {
 
   const summary = document.createElement("p");
   summary.className = "activity-copy";
-  const parts = [titleCase(decision.status)];
+  const policy = decision.policy || "unknown";
+  const isJev = policy.toLowerCase() === "jev";
+  const parts = [titleCase(decision.status), `${titleCase(policy)} policy`];
   const latency = formatDuration(decision.request_latency_ms);
-  if (latency) parts.push(`model ${latency}`);
+  if (latency) parts.push(`decision ${latency}`);
   if (Number.isFinite(decision.offered_tools)) {
-    parts.push(`${decision.offered_tools} tools offered`);
+    parts.push(`${decision.offered_tools} ${isJev ? "candidates considered" : "tools offered"}`);
   }
   if (Number.isFinite(decision.returned_tool_calls)) {
     parts.push(`${decision.returned_tool_calls} returned`);
@@ -102,6 +104,58 @@ function renderDecision(decision) {
   summary.textContent = parts.join(" · ");
   agentDecisionEl.append(summary);
 
+  if (decision.jev) {
+    const jev = decision.jev;
+    const selection = document.createElement("p");
+    selection.className = jev.fallback_reason
+      ? "telemetry-detail is-error"
+      : "telemetry-detail is-success";
+    const confidence = Number.isFinite(jev.confidence)
+      ? `${(jev.confidence * 100).toFixed(1)}% confidence`
+      : "unknown confidence";
+    const proposedProbability = Number.isFinite(jev.proposed_probability)
+      ? `${(jev.proposed_probability * 100).toFixed(1)}% proposal probability`
+      : "unknown proposal probability";
+    const selectedProbability = Number.isFinite(jev.selected_probability)
+      ? `${(jev.selected_probability * 100).toFixed(1)}% probability`
+      : "unknown probability";
+    const threshold = Number.isFinite(jev.required_confidence)
+      ? `${(jev.required_confidence * 100).toFixed(1)}% required`
+      : "unknown threshold";
+    const mode = jev.execution_enabled ? "live" : "dry run";
+    const source = jev.deterministic ? "deterministic safety rule" : "Jev";
+    selection.textContent =
+      `${source} proposed ${jev.proposed_candidate || "unknown"} (${proposedProbability}); ` +
+      `selected ${jev.selected_candidate || "wait"} · ${selectedProbability} · ` +
+      `${confidence} · ${threshold} · ${mode}`;
+    agentDecisionEl.append(selection);
+
+    if (jev.fallback_reason) {
+      const fallback = document.createElement("p");
+      fallback.className = "telemetry-detail is-error";
+      fallback.textContent = `Safety fallback: ${jev.fallback_reason}`;
+      agentDecisionEl.append(fallback);
+    }
+
+    if (Array.isArray(jev.top_candidates) && jev.top_candidates.length > 0) {
+      const distribution = document.createElement("details");
+      distribution.className = "decision-tools";
+      const heading = document.createElement("summary");
+      heading.textContent = "Candidate probabilities";
+      distribution.append(heading);
+      jev.top_candidates.forEach((candidate) => {
+        const row = document.createElement("p");
+        row.className = "telemetry-detail";
+        const value = Number.isFinite(candidate.probability)
+          ? `${(candidate.probability * 100).toFixed(1)}%`
+          : "—";
+        row.textContent = `${candidate.id}: ${value}`;
+        distribution.append(row);
+      });
+      agentDecisionEl.append(distribution);
+    }
+  }
+
   if (decision.active_tool) {
     const active = document.createElement("p");
     active.className = "decision-active";
@@ -111,7 +165,7 @@ function renderDecision(decision) {
     agentDecisionEl.append(active);
   }
 
-  if (decision.usage) {
+  if (decision.usage && !(decision.jev && decision.jev.deterministic)) {
     const usage = document.createElement("p");
     usage.className = "telemetry-detail";
     usage.textContent =
@@ -145,7 +199,10 @@ function renderDecision(decision) {
     const details = document.createElement("details");
     details.className = "decision-tools";
     const heading = document.createElement("summary");
-    heading.textContent = `Selected calls: ${selectedTools.map((tool) => tool.name).join(", ")}`;
+    const callLabel = decision.jev && !decision.jev.execution_enabled
+      ? "Would execute"
+      : "Selected calls";
+    heading.textContent = `${callLabel}: ${selectedTools.map((tool) => tool.name).join(", ")}`;
     details.append(heading);
     selectedTools.forEach((tool) => {
       const call = document.createElement("div");
@@ -166,7 +223,7 @@ function renderRecentTools(tools) {
   if (!Array.isArray(tools) || tools.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = "No tool calls reported.";
+    empty.textContent = "No actions reported.";
     agentToolsEl.append(empty);
     return;
   }
